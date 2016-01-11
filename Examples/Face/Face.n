@@ -1,0 +1,250 @@
+/* NeSeL v2.0 April 1989. Face neural net */
+/* Compile with nsl1 options -aqvmh; and no options to nsltox */
+pragma header 0
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include <malloc.h>
+#include <stdarg.h>
+#include <math.h>
+
+#include "nsltype.h"
+#include "nslstd.h"
+#include "nslios.h"
+#include "nslwsio.h"
+
+#include "face.h"
+pragma header -1
+
+#define COM_OFF 1 /* set to 1 to turn comms off */
+#define COM_MIN 1 /* minimum comm path length */
+#define COM_MAX 10 /* maximum comm length */
+
+#define MAX_DIFF (float)MAX_WIDTH
+#define DEF_MEM 0 /* default value for dendrite memories */
+#define DEF_POT 0 /* default potential in synapse */
+#define DEF_LAST 0 /* default prior potential in synapse */
+#define DEF_GRAD (float)MAX_WIDTH /* gradient of cell potential response */
+#define DEF_SIGN (float)1.0 /* direction of response */
+#if(COM_OFF==1) /* comms off */
+#define DEF_DECAY (float)0.8 /* cell potential decay rate */
+#define DEF_SIGAS (float)0.5 /* Gaussian sigma coefficient factor */
+#define DEF_THRES (float)0.75 /* Gaussian mean coefficient factor */
+#define SLW_DECAY (float)0.93 /* slow decay rate, for slow expressions */
+#define SLW_SIGAS (float)0.9
+#define SLW_THRES (float)0.85
+#endif
+#if(COM_OFF!=1) /* comms on */
+#define DEF_DECAY (float)0.9
+#define DEF_SIGAS (float)0.7
+#define DEF_THRES (float)0.75
+#define SLW_DECAY (float)0.95
+#define SLW_SIGAS (float)0.9
+#define SLW_THRES (float)0.85
+#endif
+
+#define L_FEAS 0..(NUM_FEAS-1) /* feature list range */
+/* parameters for slow expressions */
+#define isslow ..\slow=1,..\decay=SLW_DECAY,\
+..\sigauss=SLW_SIGAS,..\thres=SLW_THRES
+
+/* Note: vars declared in net files will be picked up by NeSeL
+*		 and added to monitor var lists enabling them to be examined
+*/
+float mood_rate=(float)0.25; /* rate at which to vary feature angles */
+float exsg=(float)100.0,exsc=(float)-0.08; /* expression sigmoid parameters */
+float eesg=(float)25.0,eesc=(float)-0.7; /* emotion sigmoid parameters */
+/* comms parameter for normal distribution */
+int com_off=COM_OFF,com_min=COM_MIN,com_max=COM_MAX,dsp_flag=1;
+double com_sigma_coeff=(double)12.0;
+
+typedef int pulse;
+/* Point co-ordinates for features on face */
+typedef struct
+{ int x,y;
+} coors;
+
+extern pulse get_pulse();
+
+node
+{ pulse potential;
+  int len,max;
+  pulse *delay,*input;
+} pulse_in_synapse={DEF_POT,0,0,0L};
+
+node
+{ pulse mem; /* memorised value c.f. weight */
+  pulse_in_synapse input;
+} dendrite={DEF_MEM};
+
+node
+{ pulse last; BOOL slow;
+  float sum,decay,sigauss,grad,thres,sign;
+  pulse_in_synapse input;
+} branch={DEF_LAST,FALSE,(float)0.0,
+    DEF_DECAY,DEF_SIGAS,DEF_GRAD,DEF_THRES,DEF_SIGN};
+
+node
+{ pulse output,next; float state;
+  int fealen,oldang;
+  coors feapos,oldpos,nxtpos;
+} feat_ds={,MAX_WIDTH+1,(float)-1.0,0,0,{0,0},{0,0},{0,0}};
+
+node
+{ pulse output;
+  dendrite input[];
+  NSLNSLio args;
+} expr_ds={0};
+
+node
+{ pulse output;
+  branch input[];
+  NSLNSLio args;
+} emot_ds={0};
+
+node
+{ int scr_t, /* wnd for time */
+   scr_f, /* wnd for face features */
+   scr_v, /* wnd for node output levels */
+   scr_i, /* info wnd */
+   scr_s; /* state wnd */
+  long b_feat;
+  char buff[20]; /* cur age of sim */
+} fio_ds={buff={0}};
+
+node
+{ fio_ds fio;
+  NSLNSLio args;
+} face_io_ds;
+
+double gauss(double xx,double kk,double mm,double cc)
+{ xx-=mm; xx*=xx; xx/=kk;
+  return(exp(-xx)/cc);
+}
+
+face_io_ds face_io_node()
+{ switch($args.cmd)
+    {case NSLIO_SETUP:
+        face_setup(net,&$fio); face_update(net,&$fio,$args.args); break;
+     case NSLIO_INIT: break;
+     case NSLIO_CLOSE:
+       w_close($fio.scr_f); w_close($fio.scr_i);
+       w_close($fio.scr_v); w_close($fio.scr_s); break;
+     case NSLIO_REDRAW: face_clean(&$fio,$args.args); break;
+     case NSLIO_PATTERN: face_pattern(net,&$fio,$args.args); break;
+     case NSLIO_PRE: break;
+     case NSLIO_POST: face_update(net,&$fio,$args.args); break;
+     case NSLIO_USER: face_user(&$fio,$args.args); break;
+     default:;
+    }
+  $args.cmd=NSLIO_NULL;
+}
+
+/* feature node: vary feature angle at rate */
+feat_ds feature()
+{ int nn=(int)$next,xx=(int)$output;
+  if(nn<=MAX_WIDTH&xx!=nn)
+    {if($state<(float)0.0) $state=(float)xx;
+     $state+=(((float)nn)-$state)*mood_rate;
+     $output=(pulse)($state+(float)0.5);
+    }
+  face_state(net,$,ND_FEA);
+}
+
+/* Compare inputs against memory pattern.
+* A product error is used rather than, say, the angle between vectors,
+* so that a single input mismatch isn't ignored.
+* Responds with probability of expression.
+*/
+expr_ds expression()
+{ float dd,err; int xx,nn=$size.input;
+
+  if($args.cmd!=NSLIO_NULL)
+  {	if($args.cmd==NSLIO_CLOSE)
+		for(xx=0;xx<nn;++xx) com_free(&$input[xx].input); 
+	$args.cmd=NSLIO_NULL;
+	return;
+  }
+  err=(float)1.0;
+  for(xx=0;xx<nn;++xx)
+    {dd=((float)get_pulse(net,&$input[xx].input));
+	 dd-=((float)$input[xx].mem);
+     dd/=MAX_DIFF; if(dd<(float)0.0) dd=(-dd);
+     err*=((float)1.0-generic_sigmoid(dd,(float)1.0,(float)0.0,exsg,exsc));
+    }
+  $output=(pulse)1+(pulse)((float)(MAX_WIDTH-1)*err);
+  face_state(net,$,ND_EXP);
+}
+
+/* returns true if arg is positive or equals zero */
+BOOL ispos(a) float a;
+{ return((BOOL)(a>=(float)0.0));
+}
+
+/* Track average change in expressions.
+*  Responds with probability of emotion.
+*/
+emot_ds emotion()
+{ float mm,cc,ss,kk,dd,err; int val,xx,nn=$size.input;
+
+  if($args.cmd!=NSLIO_NULL)
+  {	if($args.cmd==NSLIO_CLOSE)
+		for(xx=0;xx<nn;++xx) com_free(&$input[xx].input); 
+	$args.cmd=NSLIO_NULL;
+	return;
+  }
+
+  err=(float)1.0;
+  for(xx=0;xx<nn;++xx)
+    {val=get_pulse(net,&$input[xx].input); mm=(float)$input[xx].last;
+     dd=(float)val; if(mm>(float)0.0) dd-=mm;
+     if($input[xx].slow&&(ispos($input[xx].sign)!=ispos(dd))) dd=(float)0.0;
+     dd=$input[xx].sum*$input[xx].decay+dd*$input[xx].sign/$input[xx].grad;
+     if(dd<(float)0.0) dd=(float)0.0; else if(dd>(float)1.0) dd=(float)1.0;
+     $input[xx].sum=dd;
+     if(dd>(float)0.0)
+       {mm=$input[xx].thres; ss=(float)$input[xx].sigauss*mm;
+        kk=(float)2.0*ss*ss; cc=(float)RT2PIE*ss;
+        dd=(float)gauss((double)dd,(double)kk,(double)mm,(double)1.0);
+       }
+     err*=(float)generic_sigmoid(dd,(float)1.0,(float)0.0,eesg,eesc);
+     $input[xx].last=(pulse)val;
+    }
+  $output=(pulse)1+(pulse)((float)(MAX_WIDTH-1)*err);
+  face_state(net,$,ND_EMO);
+}
+
+net network()
+{ feature()[NUM_FEAS];
+  expression()[NUM_EXPS]
+    [E_MELLOW]/input[L_FEAS]=feature[L_FEAS]
+      {..\mem=(pulse [])[F_MELLOW]},
+    [E_HAPPY]/input[L_FEAS]=feature[L_FEAS]
+      {..\mem=(pulse [])[F_HAPPY]},
+    [E_ANGRY]/input[L_FEAS]=feature[L_FEAS]
+      {..\mem=(pulse [])[F_ANGRY]},
+    [E_SAD]/input[L_FEAS]=feature[L_FEAS]
+      {..\mem=(pulse [])[F_SAD]},
+    [E_SQUINT]/input[L_FEAS]=feature[L_FEAS]
+      {..\mem=(pulse [])[F_SQUINT]};
+  emotion()[NUM_EMTS]
+    [EM_LAUGH]/input[0..1]=expression[E_MELLOW,E_HAPPY]
+      {..\sign=(float [])[-1.0,1.0]},
+    [EM_FROWN]/input[0..1]=expression[E_MELLOW,E_ANGRY]
+      {..\sign=(float [])[-1.0,1.0]},
+    [EM_CRY]/input[0..1]=expression[E_MELLOW,E_SAD]
+      {..\sign=(float [])[-1.0,1.0]},
+    [EM_WINK]/input[0..1]=expression[E_MELLOW,E_SQUINT]
+      {..\sign=(float [])[-1.0,1.0]},
+    [EM_CRYING]/input[0..1]=expression[E_MELLOW]{..\sign=(-1.0),isslow}
+      +emotion[EM_CRY]{isslow},
+    [EM_WINKING]/input[0..1]=expression[E_MELLOW]{..\sign=(-1.0),isslow}
+      +emotion[EM_WINK]{isslow};
+  face_io_node();
+} =
+{ face_io_node={{0,0,0,0,0,a_app(s_node(),..\feature)}},
+  feature[*]={(pulse [])[F_MELLOW]},
+  feature[*]\fealen=(int [])[F_LENGTH],
+  feature[*]\feapos.x=(int [])[F_POSITION_X],
+  feature[*]\feapos.y=(int [])[F_POSITION_Y],
+}

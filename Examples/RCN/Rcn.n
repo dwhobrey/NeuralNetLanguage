@@ -1,0 +1,198 @@
+/* NeSeL v2.0 April 1989. RCN neural net */
+/* Compile with nsl1 options -aqvmh; and no options to nsltox */
+pragma header 0
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include <malloc.h>
+#include <stdarg.h>
+#include <math.h>
+
+#include "nsltype.h"
+#include "nslstd.h"
+#include "nslios.h"
+#include "nslwsio.h"
+pragma header -1
+
+node /* demo io ds */
+{int fld_siz;
+ long bs_hd, /* base handle for display node state routine */
+  	d0,c0,xx;
+ int scr_t, /* wnd for time */
+	scr_d, /* wnd for input domain */
+	scr_l, /* wnd for node output levels */
+	scr_s, /* wnd for state values */
+	scr_p, /* wnd for probe */
+	trk_probe, /* track hd for probe */
+	numbar, /* number of bars of state values (with 3 rows each bar) */
+	numlin, /* number of state values per line */
+	numelm; /* number of chrs per state value */
+ int *my_tracks; /* list of wnd track handles */
+} nio_ds={my_tracks=(int *)0L};
+
+node /* globals used by rcn */
+{ nio_ds nio; /* must be first member */
+  float Aconst,tau,tau2;
+  NSLNSLio args;
+} rcn_io_ds;
+
+node
+{ float weight;
+  float *input;
+} graded_synapse;
+
+node
+{ BOOL output;
+  float vigilance,*data[],*comp[];
+} reset_ds;
+
+node
+{ float output;
+} data_ds;
+
+node
+{ float output,alpha;
+  graded_synapse reco[];
+  float *input,*match[],*tau,*tau2;
+} compare_ds;
+
+node
+{ float output,state,ract,match;
+  graded_synapse comp[];
+  float *Aconst,*reco[],*tau,*tau2;
+  BOOL *winner,*reset;
+} recognition_ds;
+
+node
+{ BOOL output[];
+  float *input[];
+} wta_ds;
+
+rcn_io_ds rcn_io_node()
+{ switch($args.cmd)
+    {case NSLIO_SETUP:
+       rcn_setup(net,$nio.fld_siz);
+       rcn_update(net,$args.args);
+       break;
+     case NSLIO_INIT: break;
+     case NSLIO_CLOSE:
+       w_close($nio.scr_d);
+       w_close($nio.scr_l);
+       w_close($nio.scr_s);
+       if($nio.my_tracks) {lfree($nio.my_tracks); $nio.my_tracks=NULL;}
+       break;
+     case NSLIO_REDRAW: rcn_draw(net,$args.args); break;
+     case NSLIO_PATTERN: rcn_pattern(net,$args.args); break;
+     case NSLIO_PRE: break;
+     case NSLIO_POST: rcn_update(net,$args.args); break;
+     default:;
+    }
+  $args.cmd=NSLIO_NULL;
+}
+
+/* a fast! winner take all calculating node */
+wta_ds wta_node()
+ in input; out output;
+{ int nn,xx=0; float lastmax=(float)0.0,curval;
+  for(nn=0;nn<$size.input;++nn)
+     {if((curval=inf($input[nn]))>lastmax) {lastmax=curval; xx=nn;}
+      $output[nn]=FALSE;
+     }
+  $output[xx]=TRUE;
+}
+
+reset_ds reset_node(vigilance)
+  in data,comp; out output;
+{ float value; int size=$.size.data;
+  value = $.vigilance
+          * normf($.data,$.data,size,net)
+          * normf($.comp,$.comp,size,net)
+          - prodff($.data,$.data,$.comp,$.comp,size,net,net);
+  $.output = (BOOL)(value>=(float)0.0);
+}
+
+recognition_ds recognition_node()
+  in reset,reco,comp,winner; out output,ract,match,state;
+{ float matval=$match,resval=$ract,
+     staval=$state,sigval,cnorm,prod1,sum,wadj;
+  int kk,rnum=$size.reco,cnum=$size.comp;
+  /* activity updates */
+  if(inx(BOOL,$winner)) sigval=(float)1.0; else sigval=(float)0.0;
+  prod1=prodff($comp,&($comp->input),
+               $comp,&($comp->weight),cnum,net,NULL);
+  sum=sumf($reco,$reco,rnum,net)/((float)1.1+(float)rnum); /* normalise sum */
+  staval+=(float)( (- (float)1.0 * staval
+            + (1.0-staval) * (prod1 + sigval)
+            - (inf($$Aconst) + staval) * (sum + resval)
+           ) / inf($$tau));
+  $state=generic_bound(staval,(float)1.0,(float)0.0);
+  $output=sigval;
+  /* learning updates */
+  $ract+=((float) ((float)inx(BOOL,$.reset) * (sigval + matval) - resval
+           ) / inf($$tau));
+  $match+= (float)(sigval * (1.0 - matval) / inf($$tau2));
+  cnorm=normf($comp,&($comp->input),cnum,net);
+  for(kk=0;kk<cnum;++kk)
+    {wadj= inf($comp[kk].input)
+           - cnorm * $comp[kk].weight;
+     $comp[kk].weight+=
+         sigval * wadj / inf($$tau2);}
+  dsp_state(net,$node.name,$output,sum,prod1);
+}
+
+compare_ds compare_node()
+  in input,match,reco; out output;
+{ float staval=$.output,prod1,prod2; int kk,rnum=$.size.reco;
+  /* activity updates */
+  prod1=prodff($.match,$.match,
+                $.reco,&($.reco->input),
+                $.size.reco,net,net);
+  prod2=prodff($.reco,&($.reco->input),
+               $.reco,&($.reco->weight),
+               $.size.reco,net,NULL);
+  staval+= (float)((- staval
+            + inf($.input) * (1.0 - $.alpha * prod1)
+            + $.alpha * prod2
+           ) / inf($$tau)) ;
+  staval=generic_bound(staval,(float)1.0,(float)0.0);
+  $.output=staval;
+  /* learning updates */
+  for(kk=0;kk<rnum;++kk)
+    {$.reco[kk].weight+=inf($.reco[kk].input)
+       * (staval - $.reco[kk].weight) / inf($$tau2);}
+}
+
+data_ds data_node(){}
+
+/* This is based on Ryan et als. RCN net, which is a variation of ART1 nets */
+net rcn(data_size,reco_size)
+  in input; out output;
+{ data_node()[data_size];
+  compare_node()[data_size]
+    [*]=data_node[*],
+    [*]\match[&!]=recognition_node[*]\match,
+    [*]\reco[&!]=recognition_node[*];
+  recognition_node()[reco_size]
+    [*]\reset=reset_node,
+    [*]\reco[&!]=[*]--~~,
+    [*]\comp[&!]=compare_node[*],
+    [*]\winner=wta_node\output[&?];
+  reset_node()
+    data[+]=data_node,
+    comp[+]=compare_node;
+  rcn_io_node() global:;
+  wta_node()
+    input[+]=recognition_node[*]\state;
+} =
+{ dat* = (data_ds){(float [])[0.4,0.7]},
+  rec* = (recognition_ds){0.0,0.0,0.0,0.0,
+           {(float)[lnorm((float)[rndf();rndf()])]}},
+  com* = (compare_ds){0.0,0.95,{0.0}},
+  res* = {0.0,0.95},
+  rcn* = {{reco_size,$.$..\recognition_node,
+  $.$..\data_node,$.$..\compare_node,0,0,0,0,0,0,0,0,0,0},data_size,4.0,20.0},
+  wta* = {{FALSE}}
+}
+net network()
+{ rcn(2,10);
+}

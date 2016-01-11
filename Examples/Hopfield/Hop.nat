@@ -1,0 +1,20 @@
+/* NeSeL JCL file */
+/* Hopfield demo */
+/* usage: call hop; */
+
+void hop_demo()
+{ int n;
+  for(n=0;n<5;++n)
+     {step(50); if(nsl_stop) break;
+      driver("pattern",0);}
+}
+
+/*
+printf("Running Hop Demo\n");
+load field hop;
+field:;
+hop_demo();
+*/
+driver("setup");
+printf("Try: hop_demo();\n");
+

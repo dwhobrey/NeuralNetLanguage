@@ -1,0 +1,5 @@
+printf("For demonstration try: call face;\n");;
+call face;
+driver("setup");
+face_demo();
+quit;

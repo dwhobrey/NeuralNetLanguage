@@ -1,0 +1,6 @@
+title "BAM:b64s9l0, Percent Runs vs Cycles To Convergence Distribution"
+nobars
+xlab "Convergence Cycle Time"
+ylab "Percentage Of Runs"
+set samples 500
+plot [42:141] "b64s9l0.e", join(x), "b64s9l0.f", join(x)

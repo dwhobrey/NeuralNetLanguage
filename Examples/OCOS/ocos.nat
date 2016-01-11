@@ -1,0 +1,14 @@
+/* NeSeL JCL file */
+/* OCOS demo */
+/* usage: call ocos; */
+
+void ocos_demo()
+{ int n;
+  for(n=0;n<5;++n)
+     {step(50); if(nsl_stop) break;
+      driver("pattern",0);}
+}
+
+driver("setup");
+printf("Try: ocos_demo();\n");
+

@@ -1,0 +1,24 @@
+/* NeSeL JCL file */
+/* Specht XOR demo */
+/* usage: call specxor; */
+
+/* apply training patterns to net & learn */
+void spec_sweep()
+{ int x;
+  for(x=0;x<4;++x)
+   {driver("user",1); /* learn on */
+    driver("pattern",x);
+    step(6); /* 6 cycles equals signal pipe time for spec net */
+    driver("user",0); /* learn off */
+    step(6);
+   }
+}
+
+/* train net */
+void spec_demo()
+{ spec_sweep();
+}
+printf("Running SpecXor Demo\n");
+load xor spec;
+xor:;
+spec_demo();

@@ -1,0 +1,15 @@
+/* NeSeL JCL file */
+/* WTA demo */
+/* usage: call wta; */
+
+void wta_demo()
+{ int n;
+  for(n=0;n<5;++n)
+     {step(20);pattern(0);}
+}
+
+printf("Running WTA Demo\n");
+load win wta;
+win:;
+wta_demo();
+

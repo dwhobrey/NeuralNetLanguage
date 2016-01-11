@@ -1,0 +1,4 @@
+printf("For demonstration try: call ocos;\n");;
+call ocos;
+ocos_demo();
+quit;

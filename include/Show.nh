@@ -1,0 +1,49 @@
+/* Name: show.nh - Definition of node for displaying node values
+*  NeSeL v1.0 April 1989  Neural Network Specification Language
+*/
+
+/* node types for the show node */
+node {char *fmt; char *input;} show_cds={0L};
+node {char *fmt; short *input;} show_sds={0L};
+node {char *fmt; int *input;} show_ids={0L};
+node {char *fmt; long *input;} show_lds={0L};
+node {char *fmt; float *input;} show_fds={0L};
+node {char *fmt; double *input;} show_dds={0L};
+node {char *fmt; char **input;} show_cpds={0L};
+node
+{ show_cds c[]; show_ids i[]; show_lds l[]; show_fds f[]; show_dds d[];
+  show_cpds cp[];
+} show_ds;
+
+show_ds show(rate)
+{ int nn; char *fm; show_cds *ap;
+  nn=$.size.c; ap=(show_cds *)$.c;
+  while(nn--)
+    {if(!(fm=ap->fmt)) fm="%c"; printf(fm,inc(ap->input)); ++ap;}
+  nn=$.size.i; ap=(show_cds *)$.i;
+  while(nn--)
+    {if(!(fm=ap->fmt)) fm="%d"; printf(fm,ini(ap->input)); ++ap;}
+  nn=$.size.l; ap=(show_cds *)$.l;
+  while(nn--)
+    {if(!(fm=ap->fmt)) fm="%ld"; printf(fm,inl(ap->input)); ++ap;}
+  nn=$.size.f; ap=(show_cds *)$.f;
+  while(nn--)
+    {if(!(fm=ap->fmt)) fm="%f"; printf(fm,inf(ap->input)); ++ap;}
+  nn=$.size.d; ap=(show_cds *)$.d;
+  while(nn--)
+    {if(!(fm=ap->fmt)) fm="%g"; printf(fm,ind(ap->input)); ++ap;}
+  nn=$.size.cp; ap=(show_cds *)$.cp;
+  while(nn--)
+    {if(!(fm=ap->fmt)) fm="%s"; printf(fm,incp(ap->input)); ++ap;}
+}
+/* simple node type for dummuy io driver */
+node
+{ NSLNSLio args;
+} io_ds;
+
+io_ds io_driver()
+{ switch($args.cmd)
+    {default: ;
+    }
+  $args.cmd=NSLIO_NULL;
+}

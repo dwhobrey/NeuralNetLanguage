@@ -1,0 +1,22 @@
+/* Demo common net nodes & functions for use with nslms
+* NeSeL v2.0 April 1989.
+*/
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include <malloc.h>
+#include <stdarg.h>
+#include <math.h>
+
+#include "nsltype.h"
+#include "nslstd.h"
+#include "nslios.h"
+#include "nslwsio.h"
+
+/*
+#include "show.nh"
+#include "digital.nh"
+#include "analog.nh"
+*/
+
+net network() {}

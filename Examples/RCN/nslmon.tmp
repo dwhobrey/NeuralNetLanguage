@@ -1,0 +1,9 @@
+?nsl_stop;
+view rcn.nat;
+rcn_demo();
+quit;
+
+call rcn;
+driver("setup");
+rcn_demo();
+step 200;

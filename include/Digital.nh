@@ -1,0 +1,143 @@
+/* Example logic circuits library file for test purposes
+* Some simple circuit definitions
+*
+* NeSeL v1.0 April 1989.
+*/
+node
+{ BOOL output,*input,*queue; int delay;
+} delay_line={FALSE,,NULL,1};
+
+node  /* allows multiple connections to a single input */
+{ BOOL *input[];
+} TIE;
+
+node /* tie gate state info & type declaration */
+{ BOOL output;
+  TIE input[];/* takes an arbitrary number of inputs */
+} tie_gate = {FALSE};
+
+node /* logic gate state info & type declaration */
+{ BOOL output;
+  BOOL *input[];
+} logic_gate = {FALSE};
+
+delay_line delay(delay,output)
+  in input; out output;
+{ int nn;
+  if($.delay>1)
+    {if(!$.queue)
+       {$.queue=(BOOL *)malloc($.delay*sizeof(BOOL));
+        for(nn=0;nn<$.delay;++nn) $.queue[nn]=$.output;}
+     for(nn=1;nn<$.delay;++nn) $.queue[nn-1]=$.queue[nn];
+     $.queue[$.delay-1]=inx(BOOL,$.input);
+     $.output=$.queue[0];
+    }
+  else return(inx(BOOL,$.input));
+}
+
+logic_gate not(output)
+  in input; out output;
+{ int nn; BOOL output=FALSE;
+  for(nn=0;nn<$.size.input;++nn) output|=inx(BOOL,$.input[nn]);
+  return((BOOL)!output);
+}
+
+tie_gate and(output)
+  in input; out output;
+{ int nn=0,kk; BOOL output=TRUE,temp;
+  while(nn<$.size.input)
+    {temp=FALSE;
+     for(kk=0;kk<$.input[nn].size.input;++kk)
+       temp|=inx(BOOL,$.input[nn].input[kk]);
+     output &= temp; ++nn;
+    }
+  return(output);
+}
+
+tie_gate or(output)
+  in input; out output;
+{ int nn=0,kk; BOOL output=FALSE;
+  while(nn<$.size.input)
+    {for(kk=0;kk<$.input[nn].size.input;++kk)
+      output|=inx(BOOL,$.input[nn].input[kk]);
+     ++nn;}
+  return(output);
+}
+
+net nand(boot) /* This would be better defined as a function */
+  in input; out output;
+{ and(!(boot))
+    input[*]: input[*];
+  not(boot)
+    output: output, /* this refs to output of not gate */
+    input = and;
+}
+
+net RSFLOP(boot)
+  in input; out output;
+{  nand(boot)[2]
+     input[*]: [0..1]|input[0],
+     output[*]: [0..1]/output,
+     [0..1]|input[1]= [1..0]|output;
+}
+
+net halfadder(boot)
+{ and(boot)[2]
+    a: [1]/input[0],
+    b: [1]/input[1],
+    sum: [0]/output,
+    carry: [1]/output,
+    [0]=(not(boot))[1]+or;
+  or(boot)
+    ~\input[?]= >a + >b;
+}
+
+net ADD2(boot)
+  in input; out output;
+{  and(boot)[2]
+     input[*]: [1]/input[0..1],
+     output[*]: [*]/output,
+     [0]=(not(boot))[1]+or;
+   or(boot)
+     ~\input[?]=>./input[..];
+}
+
+net ADD2x2(boot)
+{  ADD2(boot)[4]
+     input[0,2]: [3]/input[0..1],
+     input[1]: [2]/input[1],
+     input[3]: [1]/input[1],
+     output[0..2]: [3,1,0]/output[0],
+     [0]=[1]/output[1]+[2]/output[1],
+     [1]/input[0]=[2]/output[0],
+     [2]/input[0]=[3]/output[1];
+}
+
+net ADD4(boot)
+{ ADD2x2(boot)[2]
+    input[*]: [0]/input[*],
+    input[4..7]: [1]/input[*],
+    output[*]: [1]/output[*];
+}
+
+net fulladder(boot)
+{ halfadder(boot)[2]
+    a: [0]/a,
+    b: [0]/b,
+    carryin: [1]/b,
+    sum: [1]/sum,
+    [1]/a = [0]/sum;
+  or(boot)
+    carry:,
+    input[?] = halfadder[1,0]/carry;
+}
+
+net add(boot,n)
+{ fulladder(boot)[n]
+    busA[*]: [*]/a,
+    busB[*]: [*]/b,
+    carryin: [0]/carryin,
+    busR[*]: [*]/sum,
+    carry: [n-1]/carry,
+    [1..(n-1)]/carryin = [0..(n-2)]/carry;
+}

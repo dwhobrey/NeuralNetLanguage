@@ -1,0 +1,18 @@
+/* NeSeL v2.0 April 1989 */
+/* WTA neural net. function version */
+node {float weight,*input;} graded_synapse;
+node {graded_synapse input[];} graded_tree;
+node {BOOL busy,output[]; graded_tree input[];} wta_fun_ds;
+
+wta_fun_ds wta_fun_node()
+ in input; out output,busy;
+{ int nn,xx=0,cnum; float lastmax=(float)0.0,curval;
+  for(nn=0;nn<$size.input;++nn)
+     {cnum=$input[nn].size.input;
+      curval=prodff($input[nn],&($input[nn]->input),
+                    $input[nn],&($input[nn]->weight),cnum,1,0)/cnum;
+      if(curval>lastmax) {lastmax=curval; xx=nn;}
+      $output[nn]=FALSE;
+     }
+  $output[xx]=TRUE; $busy=(BOOL)!$busy;
+}

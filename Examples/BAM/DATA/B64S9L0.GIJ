@@ -1,0 +1,5 @@
+title "BAM:b64s9l0, Success On Closest Prototype vs Hamming Distance"
+nobars
+xlab "Probe Hamming Distance From Prototype"
+ylab "Success Density, 0=Failed"
+plot [54:64][0.0:1.1] "b64s9l0.i", cur(x), "b64s9l0.j", cur(x)

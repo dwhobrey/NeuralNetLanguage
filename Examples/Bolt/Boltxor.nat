@@ -1,0 +1,48 @@
+/* NeSeL JCL file */
+/* Boltzmann XOR learning routines */
+/* usage: call boltxor; */
+
+
+void bolt_anneal()
+{ driver("user",7);step(1);driver("user",6); /* strobe anneal */
+ go; /* start annealing */
+ $b_ctrl\ready=0; /* reset anneal done flag */
+}
+
+/* sweep over patterns, anneal and learn at end */
+void bolt_sweep()
+{ int x;
+  driver("user",3);step(1);driver("user",2); /* strobe clear */
+  for(x=0;x<4;++x)
+   {driver("pattern",x); /* apply pattern */
+    driver("user",5); /* clamp on */
+    bolt_anneal(); if(nsl_stop) break;
+    driver("user",4); /* clamp off */
+    bolt_anneal(); if(nsl_stop) break;
+   }
+  if(nsl_stop) break;
+  driver("user",9);step(1);driver("user",8); /* strobe learn */
+  step(1);
+}
+
+void bolt_demo()
+{ int n;
+  watch n;
+  for(n=0;n<20;++n)
+     {bolt_sweep(); if(nsl_stop) break;}
+}
+/*
+printf("Running Bolt Demo\n");
+load xor bolt;
+xor:;
+*/
+driver("setup");
+
+/* set up anneal break-point */
+long b_ctrl=$0\bolt\bolt_ctrl; /* get control node handle */
+stop $b_ctrl\ready; /* set when annealing done */
+
+/*
+bolt_demo();
+*/
+printf("Try: bolt_demo();\n");

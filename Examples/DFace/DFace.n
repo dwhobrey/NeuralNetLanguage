@@ -1,0 +1,533 @@
+/* NeSeL v2.0 April 1989. DFace neural net */
+/* Compile with nsl1 options -aqvmh; and no options to nsltox */
+pragma header 0
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include <malloc.h>
+#include <stdarg.h>
+#include <math.h>
+
+#include "nsltype.h"
+#include "nslstd.h"
+#include "nslios.h"
+#include "nslwsio.h"
+
+#include "dface.h"
+pragma header -1
+
+#define COM_OFF 1 /* set to 1 to turn comms off */
+#define COM_MIN 1 /* minimum comm path length */
+#define COM_MAX 10 /* maximum comm length */
+
+#define MAX_DIFF (float)MAX_WIDTH
+#define DEF_MEM 0 /* default value for dendrite memories */
+#if(COM_OFF==1) /* comms off */
+#define DEF_RATE 1.0 /* default rate of change of state wrt dir vector */
+#define DEF_DECAY 0.9 /* default rate of decay of state */
+#define DEF_RATE_E 0.8 /* default rate for dynamic emotions */
+#define DEF_DECAY_E 0.9 /* default decay for dynamic emotions */
+#endif
+#if(COM_OFF!=1) /* comms on */
+#define DEF_RATE 0.95
+#define DEF_DECAY 0.95
+#define DEF_RATE_E 0.8
+#define DEF_DECAY_E 0.95
+#endif
+
+/* Alteration defaults */
+float altsg=(float)12.0,altsc=(float)-0.7; /* transfer sigmoid parameters */
+#define GP_SIG ((float)2.3548) /* gauss pulse sigma coeff=2.0*(sqrt(2.0*log(2.0))) */
+#define DEF_ALT_P ((float)4.0) /* number of groups */
+#define DEF_ALT_Q ((float)3.0) /* number of elements per group */
+#define DEF_ALT_A GROUP_INIT(DEF_RATE,0)/* rate of change for state elements */
+#define DEF_ALT_B GROUP_INIT(DEF_DECAY,0)/* rate of decay for state elements */
+#define DEF_ALT_W GROUP_INIT(0.5,0) /* initial state */
+#define DEF_ALT_DW GROUP_INIT(0.1,0) /* initial direction */
+
+#define L_FEAS 0..(NUM_FEAS-1) /* feature list range */
+
+float exsg=(float)100.0,exsc=(float)-0.08; /* expression sigmoid parameters */
+float mood_rate=(float)0.125; /* rate at which to vary feature angles */
+int mood_period=2; /* multiplcation factor for cycles between moods */
+/* comms parameter for normal distribution */
+int com_off=COM_OFF,com_min=COM_MIN,com_max=COM_MAX,dsp_flag=1;
+float com_sigma_coeff=(float)12.0;
+
+typedef int pulse;
+typedef int PktHnd; /* group vectors are relayed via handles */
+/* Point co-ordinates for features on face */
+typedef struct
+{ int x,y;
+} coors;
+
+typedef struct
+{ float default_value;
+  float num_elements;
+  int max_elements;
+  float *p_elements;
+} group_ds;
+
+#define GROUP_INIT(a,b) {(float)a,(float)b,0,(float *)0L}
+
+node
+{ int len,max;
+  PktHnd last,*delay,*input;
+} packet_in_synapse={0,0,0,0L};
+
+node
+{ pulse mem; /* memorised value c.f. weight */
+  packet_in_synapse input;
+} dendrite={DEF_MEM};
+
+node
+{ pulse output_value; PktHnd output; 
+  pulse next; float state;
+  int fealen,oldang;
+  coors feapos,oldpos,nxtpos;
+  NSLNSLio args;
+} feat_ds={0,0,MAX_WIDTH+1,(float)-1.0,0,0,{0,0},{0,0},{0,0}};
+
+node
+{ pulse output_value; PktHnd output;
+  dendrite input[];
+  NSLNSLio args;
+} expr_ds={0,0};
+
+node
+{ int scr_t, scr_f, scr_v, scr_i, scr_s; 
+  long b_feat,b_expr,b_emto;
+  char buff[20]; 
+} fio_ds={buff={0}};
+
+node
+{ fio_ds fio;
+  NSLNSLio args;
+} face_io_ds;
+
+node
+{ PktHnd output;
+  packet_in_synapse input[];
+  NSLNSLio args;
+} ConxToGroup_ds={0};
+
+node
+{ PktHnd output;
+  group_ds **glist;
+  packet_in_synapse input[];
+  NSLNSLio args;
+} AddGroups_ds={0,0L};
+
+node
+{ int member;
+  PktHnd output;	
+  packet_in_synapse input; 
+  NSLNSLio args;
+} FilterElement_ds={0,0};
+
+node
+{ group_ds state;
+  PktHnd output;
+  packet_in_synapse input[];
+  NSLNSLio args;
+} Reduction_ds={GROUP_INIT(0.0,0.0),0};
+
+node
+{ float p; /* number of groups (adaptable) */
+  float q; /* number of elements per group (adaptable) */
+  group_ds A; /* rate of change for state elements */
+  group_ds B; /* rate of decay for state elements */
+  group_ds W; /* current state position */
+  group_ds dW; /* direction vector in which to move state position */
+  PktHnd output;	
+  packet_in_synapse input;
+  NSLNSLio args;
+} Alteration_ds={DEF_ALT_P,DEF_ALT_Q,DEF_ALT_A,DEF_ALT_B,DEF_ALT_W,DEF_ALT_DW,0};
+
+node
+{ group_ds state;
+  PktHnd output;	
+  packet_in_synapse input; 
+  NSLNSLio args;
+} Production_ds={GROUP_INIT(0.0,0.0),0};
+
+extern void PacketFree();
+extern void *PacketDataPt(PktHnd hd);
+extern void PacketAccess(PktHnd hd);
+extern void PacketRelease(PktHnd *phd),PacketUnlock(PktHnd *phd);
+extern PktHnd PacketAlloc(int nsize),PacketGet(NSLNSLnet *net,packet_in_synapse *dp);
+extern pulse PulsePacketGet(PktHnd hd);
+
+/* returns true if arg is positive or equals zero */
+BOOL ispos(float a)
+{ return((BOOL)(a>=(float)0.0));
+}
+
+/* Convert pulse val to be in interval [0,1] */
+float Pulse2Norm(pulse val)
+{ return (float)val/(float)(MAX_WIDTH);
+}
+
+float Gauss(float xx,float kk,float mm,float cc)
+{ xx-=mm; xx*=xx; xx/=kk;
+  return((float)exp((double)(-xx))/cc);
+}
+
+float GaussPulse(float i, float j, float n, float p, float ss)
+{	i/=n; j/=p;
+	i-=j; i/=ss; i*=i; i*=(float)(-0.5);
+	return((float)exp((double)i));
+}
+
+/* Save a pulse value in a packet */
+void PulsePacketAlloc(PktHnd *phd, pulse n)
+{	PktHnd hd; 
+	PacketUnlock(phd);
+	hd=PacketAlloc(sizeof(pulse)); 
+	*phd=hd;
+	*((pulse *)PacketDataPt(hd))=n;
+}
+
+group_ds *GroupPacketGet(PktHnd hd)
+{	return (group_ds *)PacketDataPt(hd);
+}
+
+/* Alloc memory for each group element */
+void GroupPacketAlloc(PktHnd *phd,int nn)
+{	PktHnd hd; group_ds *p;
+	PacketUnlock(phd);
+	hd=PacketAlloc(sizeof(group_ds)+nn*sizeof(float)); 
+	*phd=hd;
+	p=(group_ds *)PacketDataPt(hd); 
+	p->p_elements=(float *)(p+1);
+	p->max_elements=nn;
+	p->num_elements=(float)nn;
+	p->default_value=(float)0.0;
+}
+
+/* Alloc space for group via packet table & init values */
+group_ds *GroupAlloc(group_ds *p, int nn)
+{	PktHnd hd=0; group_ds *q; int i;
+	GroupPacketAlloc(&hd,nn);
+	q=(group_ds *)PacketDataPt(hd);
+	if(p) 
+	{	p->p_elements=q->p_elements;
+		p->max_elements=q->max_elements;
+		p->num_elements=q->num_elements;
+		q=p;
+	}
+	for(i=0;i<nn;i++) q->p_elements[i]=q->default_value;
+	return q;
+}
+
+face_io_ds face_io_node()
+{ switch($args.cmd)
+    {case NSLIO_SETUP:
+       face_setup(net,&$fio); face_update(net,&$fio,$args.args); break;
+     case NSLIO_INIT: break;
+     case NSLIO_CLOSE:
+       w_close($fio.scr_f); w_close($fio.scr_i);
+       w_close($fio.scr_v); w_close($fio.scr_s); 
+	   PacketFree(); break;
+     case NSLIO_REDRAW: face_clean(&$fio,$args.args); break;
+     case NSLIO_PATTERN: face_pattern(net,&$fio,$args.args); break;
+     case NSLIO_PRE: break;
+     case NSLIO_POST: face_update(net,&$fio,$args.args); break;
+     case NSLIO_USER: face_user(&$fio,$args.args); break;
+     default:;
+    }
+  $args.cmd=NSLIO_NULL;
+}
+
+long tbug_time; long tbug_node; char *tbug_name;
+#define TBUGSET(a) tbug_time=net->time; tbug_node=node->node.name; tbug_name= #a;\
+	w_printf(wnd_std,"%ld,%ld%s\n",tbug_time,tbug_node,tbug_name);
+
+/* feature node: vary feature angle at rate */
+feat_ds feature()
+{ pulse nn=$next,xx=$output_value;
+  TBUGSET(feature)
+  if($args.cmd!=NSLIO_NULL)
+  {	$args.cmd=NSLIO_NULL;
+	return;
+  }
+  if(nn<=MAX_WIDTH && xx!=nn)
+    {if($state<(float)0.0) $state=(float)xx;
+     $state+=(((float)nn)-$state)*mood_rate;
+	 $output_value=(pulse)($state+(float)0.5);
+    }
+  PulsePacketAlloc(&$output,$output_value);
+  face_state(net,$,ND_FEA);
+}
+
+/* Compare inputs against memory pattern.
+* A product error is used rather than, say, the angle between vectors,
+* so that a single input mismatch isn't ignored.
+* Responds with probability of expression.
+*/
+expr_ds expression()
+{ float dd,err; int xx,nn=$size.input;
+  TBUGSET(expression)
+  if($args.cmd!=NSLIO_NULL)
+  {	if($args.cmd==NSLIO_CLOSE)
+		for(xx=0;xx<nn;++xx) com_free(&$input[xx].input); 
+	$args.cmd=NSLIO_NULL;
+	return;
+  }
+  err=(float)1.0;
+  for(xx=0;xx<nn;++xx)
+  { dd=(float)PulsePacketGet(PacketGet(net,&$input[xx].input)); 
+	dd-=((float)$input[xx].mem);
+    dd/=MAX_DIFF; if(dd<(float)0.0) dd=(-dd);
+    err*=((float)1.0-generic_sigmoid(dd,(float)1.0,(float)0.0,exsg,exsc));
+  }
+  $output_value=(pulse)1+(pulse)((float)(MAX_WIDTH-1)*err);
+  PulsePacketAlloc(&$output,$output_value);
+  face_state(net,$,ND_EXP);
+}
+
+/* maps n inputs to an n dim group output vector */
+ConxToGroup_ds ConxToGroup()
+{	int xx,nn=$size.input; float *pe;
+  TBUGSET(ConxToGroup)
+	if($args.cmd!=NSLIO_NULL)
+	{	if($args.cmd==NSLIO_CLOSE)
+			for(xx=0;xx<nn;++xx) com_free(&$input[xx]); 
+		$args.cmd=NSLIO_NULL;
+		return;
+	}
+	GroupPacketAlloc(&$output,nn);
+	pe=((group_ds *)PacketDataPt($output))->p_elements;
+	for(xx=0;xx<nn;++xx)
+		pe[xx]=Pulse2Norm(PulsePacketGet(PacketGet(net,&$input[xx])));
+}
+
+/* Append groups into one i.e. form cross-product */
+AddGroups_ds AddGroups()
+{	int k=0,empty=0,xx,nn=$size.input; group_ds *py;
+  TBUGSET(AddGroups)
+	if($args.cmd!=NSLIO_NULL)
+	{	if($args.cmd==NSLIO_CLOSE)
+		{	for(xx=0;xx<nn;++xx) com_free(&$input[xx]); 
+			if($glist) {free($glist); $glist=NULL;}
+		}
+		$args.cmd=NSLIO_NULL;
+		return;
+	}
+	if(!$glist) $glist=(group_ds **)malloc(sizeof(group_ds *)*nn); 
+	for(xx=0;xx<nn;++xx) 
+	{	$glist[xx]=GroupPacketGet(PacketGet(net,&$input[xx]));
+		if($glist[xx]) k+=(int)$glist[xx]->num_elements; else ++empty;
+	}
+	if(empty)
+		GroupPacketAlloc(&$output,0); /* xmit a null group for now */
+	else
+	{	int i,j,m=0;
+		GroupPacketAlloc(&$output,k);
+		py=(group_ds *)PacketDataPt($output);
+		for(xx=0;xx<nn;++xx)
+		{	j=(int)$glist[xx]->num_elements;
+			for(i=0;i<j;i++) py->p_elements[m++]=$glist[xx]->p_elements[i];
+		}
+	}
+}
+
+/* Extract one element from group */
+FilterElement_ds FilterElement(member)
+{	group_ds *pg,*py;
+  TBUGSET(FilterElement)
+	if($args.cmd!=NSLIO_NULL)
+	{	if($args.cmd==NSLIO_CLOSE) com_free(&$input); 
+		$args.cmd=NSLIO_NULL;
+		return;
+	}
+	pg=GroupPacketGet(PacketGet(net,&$input));
+	GroupPacketAlloc(&$output,(int)1);
+	py=(group_ds *)PacketDataPt($output);
+	py->p_elements[0]=( (pg&&(((int)pg->num_elements)>$member))
+		?(pg->p_elements[$member]):((float)0.0) ); 
+}
+
+/* Generic Gaussian Group Alteration 
+* 1) Approximate continuous distrbutions by discrete ones
+* 2) Degree of partitioning may be an evolving parameter 
+*/
+Alteration_ds GenericGGAlteration()
+{	int i,j,n=0,p=0; float sum,sq,N,*g,*dW,*W,*A,*B; group_ds *pg,*py;
+  TBUGSET(GenericGGAlteration)
+	if($args.cmd!=NSLIO_NULL)
+	{	if($args.cmd==NSLIO_CLOSE) com_free(&$input); 
+		$args.cmd=NSLIO_NULL;
+		return;
+	}
+	if(pg=GroupPacketGet(PacketGet(net,&$input)))
+	{	g=pg->p_elements; n=(int)pg->num_elements; 
+		if(n>0)
+		{	p=(int)$p;
+			if(!$A.p_elements)
+			{	GroupAlloc(&$A,p); GroupAlloc(&$B,p); 
+				GroupAlloc(&$W,p); GroupAlloc(&$dW,p);
+			}
+			A=$A.p_elements; B=$B.p_elements; 
+			W=$W.p_elements; dW=$dW.p_elements;
+	
+			/* compute direction vector */
+			sq=(float)1.0/(GP_SIG*$q*$p);
+			for(j=0;j<p;j++)
+			{	sum=(float)0.0;
+				for(i=0;i<n;i++)
+					sum+=g[i]*GaussPulse((float)i,(float)j,(float)(n-1),(float)(p-1),sq);
+				dW[j]=sum;
+			}
+
+			/* normalise direction vector */
+			N=(float)0.0; 
+			for(j=0;j<p;j++) N+=dW[j];
+			if(N!=(float)0.0) for(j=0;j<p;j++) dW[j]/=N;
+
+			/* move state position */
+			for(j=0;j<p;j++)
+			{	W[j]=B[j]*W[j]+A[j]*dW[j]; 
+				W[j]=generic_sigmoid(W[j],(float)1.0,(float)0.0,altsg,altsc);
+			}
+	}	}
+	/* output == new state position */
+	GroupPacketAlloc(&$output,p);
+	py=(group_ds *)PacketDataPt($output);
+	for(j=0;j<p;j++) py->p_elements[j]=W[j];
+	face_state(net,$,ND_ALT);
+}
+
+/* Generic Identity Production
+*  Maps input to output 
+*/
+Production_ds GenericIdentityProduction()
+{	int i,n=0; group_ds *pg,*py;
+  TBUGSET(GenericIdentityProduction)
+	if($args.cmd!=NSLIO_NULL)
+	{	if($args.cmd==NSLIO_CLOSE) com_free(&$input); 
+		$args.cmd=NSLIO_NULL;
+		return;
+	}
+	if(pg=GroupPacketGet(PacketGet(net,&$input)))
+	{	if((n=(int)pg->num_elements)>0)
+			if(!$state.p_elements) GroupAlloc(&$state,n);
+	}
+	GroupPacketAlloc(&$output,n);
+	py=(group_ds *)PacketDataPt($output);
+	for(i=0;i<n;i++) 
+	{	py->p_elements[i]=pg->p_elements[i]; 
+		$state.p_elements[i]=pg->p_elements[i];
+	}
+	face_state(net,$,ND_PRO);
+}
+
+/* Generic Linear Reduction 
+*  Take	linear combination of input groups
+*/
+Reduction_ds GenericLinearReduction()
+{	int i,j,k=0,m=0,xx,nn=$size.input; group_ds *pg,*py;
+  TBUGSET(GenericLinearReduction)
+	if($args.cmd!=NSLIO_NULL)
+	{	if($args.cmd==NSLIO_CLOSE)
+			for(xx=0;xx<nn;++xx) com_free(&$input[xx]); 
+		$args.cmd=NSLIO_NULL;
+		return;
+	}
+	for(xx=0;xx<nn;++xx)
+	{	if(!(pg=GroupPacketGet(PacketGet(net,&$input[xx])))) continue;
+		j=(int)pg->num_elements; 
+		if(k==0) 
+		{	k=j;
+			if(k>0 && !$state.p_elements) GroupAlloc(&$state,k);
+			for(i=0;i<k;i++) $state.p_elements[i]=$state.default_value;	
+		}
+		else if(k!=j) break;
+		++m;
+		for(i=0;i<k;i++) $state.p_elements[i]+=pg->p_elements[i];
+	}
+	if(m>1) for(i=0;i<k;i++) $state.p_elements[i]/=(float)m;
+	
+	GroupPacketAlloc(&$output,k);
+	py=(group_ds *)PacketDataPt($output);
+	for(i=0;i<k;i++) py->p_elements[i]=$state.p_elements[i]; 
+}
+
+net ExpressionReduction()
+{ feature()[NUM_FEAS];
+  expression()[NUM_EXPS] 
+	[E_MELLOW]/input[L_FEAS]=feature[L_FEAS]
+      {..\mem=(pulse [])[F_MELLOW]},
+    [E_HAPPY]/input[L_FEAS]=feature[L_FEAS]
+      {..\mem=(pulse [])[F_HAPPY]},
+    [E_ANGRY]/input[L_FEAS]=feature[L_FEAS]
+      {..\mem=(pulse [])[F_ANGRY]},
+    [E_SAD]/input[L_FEAS]=feature[L_FEAS]
+      {..\mem=(pulse [])[F_SAD]},
+    [E_SQUINT]/input[L_FEAS]=feature[L_FEAS]
+      {..\mem=(pulse [])[F_SQUINT]};
+  ConxToGroup()
+	output:,
+    input[*]=expression[E_HAPPY,E_MELLOW,E_MELLOW,E_ANGRY,
+		E_MELLOW,E_SAD,E_MELLOW,E_SQUINT]/output;
+  ConxToGroup()
+	mellow:,
+	input[*]=expression[E_MELLOW]/output;
+} =
+{ feature[*]={(pulse [])[F_MELLOW]},
+  feature[*]\fealen=(int [])[F_LENGTH],
+  feature[*]\feapos.x=(int [])[F_POSITION_X],
+  feature[*]\feapos.y=(int [])[F_POSITION_Y]
+}
+
+net DynSupportExpression()
+{	ExpressionReduction() 
+		feature: feature,
+		mellow: mellow; 
+	GenericGGAlteration()
+		input=ExpressionReduction/output;
+	GenericIdentityProduction()
+		output: output,
+		input=GenericGGAlteration/output;
+} =
+{ GenericGGAlteration\p=(float)4.0; /* laugh, frown, cry, wink groups */
+  GenericGGAlteration\q=(float)1.0; /* number of elements per group */
+}
+
+net DynSupportEmotion()
+{	GenericLinearReduction() 
+		input: input; 
+	GenericGGAlteration()
+		input=GenericLinearReduction/output;
+	GenericIdentityProduction()
+		output: output,
+		input=GenericGGAlteration/output;
+} =
+{ GenericGGAlteration\p=(float)3.0; /* crying, winking, neither groups */
+  GenericGGAlteration\q=(float)1.0; /* number of elements per group */
+  GenericGGAlteration\A=GROUP_INIT(DEF_RATE_E,0); /* rate of change */
+  GenericGGAlteration\B=GROUP_INIT(DEF_DECAY_E,0); /* rate of decay */
+}
+
+net network()
+{	DynSupportExpression()
+		mellow: mellow;
+	FilterElement(D_CRY)
+		cry: output,
+		input=DynSupportExpression/output;
+	FilterElement(D_WINK)
+		wink: output,
+		input=DynSupportExpression/output;
+	AddGroups()
+		input=cry+wink+mellow;
+	DynSupportEmotion()
+		input=AddGroups;
+	face_io_node();
+} =
+{ face_io_node={{
+		0,0,0,0,0,
+		a_app(s_node(),..\DynSupportExpression\feature),
+		a_app(s_node(),..\DynSupportExpression\GenericIdentityProduction),
+		a_app(s_node(),..\DynSupportEmotion\GenericIdentityProduction)
+	}}
+}

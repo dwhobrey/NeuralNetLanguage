@@ -1,0 +1,3 @@
+printf("For demonstration try: call dface;\n");;
+view dface.nat;
+quit

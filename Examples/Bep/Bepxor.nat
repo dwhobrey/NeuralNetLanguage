@@ -1,0 +1,38 @@
+/* NeSeL JCL file */
+/* Bep XOR learning demo */
+/* usage: call bepxor; */
+
+/* sweep over training patterns & learn */
+void bep_sweep()
+{ int p;
+  driver("user",2);
+  for(p=0;p<4;++p)
+    {driver("user",0); /* learn off */
+     driver("pattern",p);
+     step(3); /* 3 cycles to allow signals time to traverse net */
+     if(nsl_stop) break;
+     driver("user",1); /* learn on */
+     step(3);
+     if(nsl_stop) break;
+    }
+  driver("user",0); driver("user",3); /* learn off, update weights on */
+  if(!nsl_stop) step(2);
+  driver("user",2); /* weight update off */
+}
+
+/* train net */
+void bep_demo()
+{ int n;
+  watch n;
+  for(n=0;n<300;++n)
+     {bep_sweep();
+      if(nsl_stop) break;
+     }
+}
+printf("Try: driver(\"setup\"); bep_demo();\n");
+/*
+printf("Running BepXor Demo\n");
+load xor bep;
+xor:;
+bep_demo();
+*/

@@ -1,0 +1,236 @@
+/* NeSeL v2.0 April 1989 */
+/* Boltzmann neural net demo */
+/* Compile with nsl1 options -aqvmh; and no options to nsltox */
+pragma header 0
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include <malloc.h>
+#include <stdarg.h>
+#include <math.h>
+
+#include "nsltype.h"
+#include "nslstd.h"
+#include "nslios.h"
+#include "nslwsio.h"
+pragma header -1
+
+#define BOLT_ANN_MAX 14 /* max number of stages in learning schedules */
+
+typedef struct _ann_sched
+{ int cycles;
+  float temp;
+} ann_sched;
+
+node /* bolt io ds */
+{ long xx;
+  int num_vis,num_hid;
+  long b_node,b_ctrl,b_user;
+  int scr_t,scr_a,scr_w,scr_i;
+} bmio_ds;
+
+node
+{ bmio_ds bmio;
+  NSLNSLio args;
+} bolt_io_ds;
+
+node
+{ float weight;
+  int eon,con;
+  BOOL *input;
+} bolt_synapse;
+
+node
+{ BOOL output;
+  int ccount,ecount,con,eon;
+  float bias;
+  bolt_synapse input[];
+  BOOL *reset,*clear,*learn,*stats,*fixed,*probe,*clamp,*clampon;
+  float *temp,*wtinc;
+} bolt_ds;
+
+node
+{ BOOL reset,clear,learn,stats,fixed,notfixed,anneal,ready,probe[];
+  int lastprobe,numprobe,ann_cycle,ann_num,ann_max;
+  float temp,wtinc;
+  ann_sched sched[BOLT_ANN_MAX];
+  BOOL *usreset,*usclear,*usanneal,*usfixed,*uslearn;
+} bolt_ctrl_ds;
+
+node
+{ BOOL reset,clear,anneal,fixed,learn,output[];
+} bolt_user_ds;
+
+bolt_io_ds bolt_io_node()
+{ switch($args.cmd)
+    {case NSLIO_SETUP:
+       bolt_setup(net);
+       bolt_update(net,$args.args);
+       break;
+     case NSLIO_INIT: break;
+     case NSLIO_CLOSE:
+       w_close($bmio.scr_a);
+       w_close($bmio.scr_w);
+       break;
+     case NSLIO_REDRAW: bolt_draw(net,$args.args); break;
+     case NSLIO_PATTERN: bolt_pattern(net,$args.args); break;
+     case NSLIO_PRE: break;
+     case NSLIO_POST: bolt_update(net,$args.args); break;
+     case NSLIO_USER: bolt_user(net,$args.args); break;
+     default:;
+    }
+  $args.cmd=NSLIO_NULL;
+}
+
+bolt_user_ds bolt_user_node(){}
+
+/* This node controls annealing schedule, learning, stats gathering and
+*  node random update probing.
+*  The anneal input must be strobed to trigger annealing,
+*  a ready signal is set when done.
+*/
+bolt_ctrl_ds bolt_ctrl()
+  out output,probe,clear,reset,fixed,notfixed,anneal,learn,stats,ready,temp;
+  in usreset,usfixed,usanneal,usclear,uslearn;
+{ int xx;
+  $reset=inx(BOOL,$usreset); $clear=inx(BOOL,$usclear);
+  $fixed=inx(BOOL,$usfixed); $learn=inx(BOOL,$uslearn);
+  if($reset||$clear)
+    {for(xx=0;xx<$size.probe;++xx) $probe[xx]=FALSE;
+     $ready=FALSE; $anneal=FALSE; $lastprobe=0; $numprobe=0; $ann_cycle=0; $ann_num=0;
+    }
+  $probe[$lastprobe]=FALSE;
+  if($learn)
+    {byebye: $stats=FALSE; $anneal=FALSE;
+     $ann_num=0; $numprobe=0; $ann_cycle=0; $lastprobe=0;
+     return;
+    }
+  if(inx(BOOL,$usanneal)) $anneal=TRUE;
+  if($anneal)
+    {if($numprobe)
+       {$lastprobe=rnd($size.probe)-1; $probe[$lastprobe]=TRUE;
+        --$numprobe;
+       }
+     else
+       {if($ann_cycle) --$ann_cycle;
+        if(!$ann_num||!$ann_cycle)
+          {if($ann_num>=$ann_max)
+             {$ready=TRUE; goto byebye;}
+           else
+             {$ann_cycle=$sched[$ann_num].cycles;
+              $temp=$sched[$ann_num].temp;
+              $numprobe=$size.probe;
+              ++$ann_num;
+              if($ann_num==$ann_max) {$stats=TRUE;}
+             }
+          }
+       }
+    }
+}
+
+/* This node works for both visible & hidden nodes.
+*  Regarding clamping etc:
+*  `clamp' is the input value to be clamped,
+*  `clampon' indicates if clamp to be applied,
+*  `fixed' indicates if node is visible (clampable) or hidden
+*/
+bolt_ds bolt_node()
+  in input,probe,reset,clear,fixed,clamp,clampon,learn,stats,temp;
+  out output;
+{ float dwt,prod; int xx; BOOL isclamp;
+  if(inx(BOOL,$$reset))
+    {$output=FALSE; $bias=(float)0;
+     for(xx=0;xx<$size.input;++xx) $input[xx].weight=(float)0.0;
+    }
+  if(inx(BOOL,$$reset)||inx(BOOL,$$clear))
+    {$ecount=0; $ccount=0; $eon=0; $con=0;
+     for(xx=0;xx<$size.input;++xx) {$input[xx].eon=0; $input[xx].con=0;}
+    }
+  isclamp=inx(BOOL,$clampon);
+  if(isclamp)
+    {if(inx(BOOL,$fixed))
+       {$output=inx(BOOL,$clamp);
+        if($output) $output=(BOOL)(rndf()>=(float)0.15);
+        else $output=(BOOL)(rndf()<=(float)0.05);
+       }
+    }
+  else if(inx(BOOL,$$clear)) $output=(BOOL)(rndf()>=(float)0.5);
+  if(inx(BOOL,$$learn))
+    {if($ecount>0&&$ccount>0)
+       {for(xx=0;xx<$size.input;++xx)
+           {prod=(((float)$input[xx].con)/$ccount
+              -((float)$input[xx].eon)/$ecount);
+          if(prod>(float)0.0) dwt=(float)(inf($$wtinc));
+          else if(prod<(float)0.0) dwt=(float)(-inf($$wtinc));
+          else dwt=(float)0.0;
+          dwt+=$input[xx].weight;
+          prod=(float)(rndf()<((float)0.0001*dwt));
+          $input[xx].weight=dwt-prod;
+
+         }
+        prod=(((float)$con)/$ccount-((float)$eon)/$ecount);
+        if(prod>(float)0.0) dwt=(float)(1.0);
+        else if(prod<(float)0.0) dwt=(float)(-1.0);
+        else dwt=(float)0.0;
+        dwt+=$bias;
+        prod=(float)(rndf()<((float)0.0001*dwt));
+        $bias=dwt-prod;
+       }
+    }
+  else if(inx(BOOL,$$stats))
+    {if(isclamp) ++$ccount; else ++$ecount;
+     if($output)
+       {for(xx=0;xx<$size.input;++xx)
+          {if(inx(BOOL,$input[xx].input))
+             {if(isclamp) ++$input[xx].con; else ++$input[xx].eon;}
+          }
+        if(isclamp) ++$con; else ++$eon;
+       }
+    }
+  else if($probe&&!isclamp&&!inx(BOOL,$clear))
+    {prod=prodcf($input,&($input->input),
+                 $input,&($input->weight),$size.input,net,NULL);
+     dwt=(-(prod+$bias)/inf($$temp));
+     dwt=(float)1.0-(float)1.0/((float)1.0+(float)exp((double)dwt));
+     $output=(BOOL)(rndf()>=dwt);
+    }
+}
+
+/* The main Boltzmann net def. See Rumelhart et al. */
+net bolt(bolt_size,vis)
+  in input,reset,fixed,anneal,learn,clear; out output,ready;
+{ bolt_node()[bolt_size] input:[*]\clamp,output:,
+    [*]\input[&0]=[*]--~~,
+    [*]\probe=bolt_ctrl\probe[&?],
+    [*]\clampon=bolt_ctrl\fixed,
+    [*]\fixed=bolt_ctrl\fixed[int x=vis;while(x--)[0]]
+       +bolt_ctrl\notfixed[int x=bolt_size-vis;while(x--)[0]];
+  bolt_ctrl() global:,reset:usreset,clear:usclear,fixed:usfixed,
+    anneal:usanneal,learn:uslearn,ready:ready;
+} =
+{ bolt_node = {0,0,0,0,0,0.0,{0.0,0,0}},
+  bolt_ctrl =
+   {0,0,0,0,0,0,0,0,{0},0,0,0,0,10,10.0,2.0,
+     {{2,40.0},{2,35.0},{2,30.0},{2,25.0},{2,20.0},
+      {2,16.0},{2,14.0},{2,12.0},{9,10.0},{5,10.0},
+      {0,0.0}
+     }
+   }
+}
+
+#define BOLTSIZE 4
+#define BOLTVIS 3
+net network()
+{ bolt(BOLTSIZE,BOLTVIS)
+    input[*]=bolt_user_node\output[0..(BOLTVIS-1)],
+    reset=bolt_user_node\reset, clear=bolt_user_node\clear, 
+	learn=bolt_user_node\learn, fixed=bolt_user_node\fixed, 
+	anneal=bolt_user_node\anneal;
+  bolt_user_node();
+  bolt_io_node();
+} =
+{ bolt_user_node = {0,0,0,0,0,{0}},
+  bolt_io_node = {{0,BOLTVIS,BOLTSIZE-BOLTVIS,
+     $.$..\bolt\bolt_node,$.$..\bolt\bolt_ctrl,$.$..\bolt_user_node,
+     0,0,0,0}}
+}

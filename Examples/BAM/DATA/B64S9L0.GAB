@@ -1,0 +1,6 @@
+title "BAM:b64s9l0, Cycles To Convergence vs Hamming Distance"
+nobars
+xlab "Probe Hamming Distance From Prototype"
+ylab "Cycles To Convergence"
+set samples 1000
+plot [54:64] "b64s9l0.a", ply1(x), "b64s9l0.b", bfit(x)

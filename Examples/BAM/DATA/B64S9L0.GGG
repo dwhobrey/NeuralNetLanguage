@@ -1,0 +1,10 @@
+title "BAM:b64s9l0, Number Of Transfers vs Path Length"
+nobars
+xlab "Path Length / Net Nodes"
+ylab "Number Of Transfers"
+set samples 500
+sigma = 3.31366
+mm = 10.1559
+konst = 80250.0
+gauss(x) = konst * exp(-0.5*(((x-mm)/sigma)**2))
+plot [0:19] "b64s9l0.g", gauss(x)

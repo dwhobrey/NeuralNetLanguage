@@ -1,0 +1,132 @@
+/* NeSeL v1.0 April 1989 */
+/* BAM neural net: pure C version */
+/* Compile with nsl1 options -aqhy  */
+pragma header 0
+#include <math.h>
+pragma header -1
+#include "nsltype.h"
+extern double lhopsum(int,int,int,double,double,char *);
+
+#include "r64.h"
+/* transfer function parameters */
+float sg=(float)5.0,tau=(float)4.0,tau2=(float)(NUM_FLD/4);
+
+/* connection input macros */
+#define inc(x) (*(net->cpt[(int)(x)].cpt))
+#define inf(x) (*((float *)(net->cpt[(int)(x)].cpt)))
+/* node data structure reference macros */
+#define dsi(n,t,p) ((int)((t *)(net->npt[(int)(n)-1].dpt))->p)
+#define dsf(n,t,p) ((float)((t *)(net->npt[(int)(n)-1].dpt))->p)
+
+/* A neurons output state is coded from [-1,+1] to [0..QMULT] */
+#define QMULT 254
+typedef unsigned char quant;
+
+node
+{ float weight; int len,max;
+  quant tap,*input,*delay;
+} delay_synapse={0.0,0,0,0,,0L};
+
+/* neuron data-structure */
+node
+{ quant output;
+  float oldval,state,*probe;
+  delay_synapse input[];
+} hop_tree;
+
+/* Partition data-structure */
+node
+{ BOOL stable;
+  hop_tree part[];
+  BOOL *reset;
+} hop_tree_ds;
+
+node /* i/o stuff */
+{ int num,xdim,fld_siz;
+  long flda,fldb,ctrl; /* base handles for fields */
+} bio_ds;
+
+node
+{ bio_ds nio;
+  NSLNSLio args;
+  BOOL reset;
+  int flush,age;
+  float output[];
+  BOOL *stable[];
+} hop_ctrl_ds;
+
+/* Control node, detects when flushing net, or stable */
+hop_ctrl_ds hop_ctrl()
+  in stable; out output,reset;
+{ int nn; BOOL stable=TRUE;
+  ++curcc; /* age of present run */
+  if($flush) {$reset=TRUE; $age=0; --$flush;}
+  else
+    {$reset=FALSE;
+     for(nn=0;nn<$size.stable;++nn) stable&=inx(BOOL,$stable[nn]);
+     if(stable) ++$age;
+     nsl_stop=(int)($age>base_age);
+    }
+}
+
+/* Basic graded hop node, optimised version */
+hop_tree_ds hop_part_node()
+  in reset; out stable; inout part;
+{ float prod,staval; int nn,xx,yy; hop_tree *hp=$part; BOOL stable=TRUE;
+  xx=$size.part; yy=hp->size.input;
+  for(nn=0;nn<xx;++nn)
+     {com_delay(hp->input,xx,yy,nn,$node.name); /* simulate comms */
+      if(inx(BOOL,$reset)) staval=inf(hp->probe);
+      else
+        {staval=hp->state;
+         prod=vec_liprod(&(hp->input->tap),&(hp->input->weight),yy);
+         staval+=( - staval / tau + prod / tau2 );
+        }
+      if(staval>(float)1.0) staval=(float)1.0;
+      else if(staval<(float)0.0) staval=(float)0.0;
+      hp->state=staval;
+      hp->output=(quant)((float)(QMULT)/
+         ((float)1.0+(float)exp((double)(-sg * (staval-(float)0.5)))));
+      if(inx(BOOL,$reset)) {stable=FALSE; hp->oldval=(float)0.0;}
+      else {stable&=(BOOL)(staval==hp->oldval); hp->oldval=staval;}
+      ++hp;
+     }
+  $stable=stable;
+}
+
+#define fld_siz (num_parts*num_nodes)
+#define xdim (1+sqrt(2*fld_siz))
+
+/* Partitioned BAM net,
+*  num_parts=num partitions, num_nodes = num regular nodes per partition */
+net bampart(num_parts,num_nodes,noself,pa,pb,#pats)
+  in input; out output;
+{ hop_part_node()[num_parts] fielda:,
+   [*]\part[0..(num_nodes-1)]\input[0..(fld_siz-1)]=
+     fieldb[*]\part[0..(num_nodes-1)],
+   [*]\part[0..(num_nodes-1)]\probe=
+     hop_ctrl\output[0..(fld_siz-1)],
+   [*]\reset=hop_ctrl\reset;
+  hop_part_node()[num_parts] fieldb:,
+   [*]\part[0..(num_nodes-1)]\input[0..(fld_siz-1)]=
+     fielda[*]\part[0..(num_nodes-1)],
+   [*]\part[0..(num_nodes-1)]\probe=
+     hop_ctrl\output[fld_siz..(2*fld_siz-1)],
+   [*]\reset=hop_ctrl\reset;
+  hop_ctrl()
+    stable[+]=fielda[*]\stable+fieldb[*]\stable;
+} =
+{ hop_part_node[*]\stable=0,
+  hop_part_node[*]\part = {0,0.5,0.0},
+  fielda[*]\part[*]\input[*]\weight=
+    (float)lhopsum(($#?1)*num_nodes+$#?2,fld_siz+$#?3,noself,pa,pb,pats),
+  fieldb[*]\part[*]\input[*]\weight=
+    (float)lhopsum(fld_siz+($#?1)*num_nodes+$#?2,$#?3,noself,pa,pb,pats),
+  hop_ctrl = {{2*fld_siz,xdim,fld_siz,
+     $.$..\fielda,$.$..\fieldb,$.$..\hop_ctrl},,
+     TRUE,(int)2*xdim,0,{0.0}}
+}
+
+net network()
+{ bampart(NUM_PAS,NUM_NOS,0,2.0,-1.0,PATS);
+}

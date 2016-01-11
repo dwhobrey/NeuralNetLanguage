@@ -1,0 +1,31 @@
+/* NeSeL JCL file */
+/* DFace test routines */
+/* usage: call dface; */
+
+/* set up cycles between mood changes */
+long mood_swing=14*mood_period;
+if(com_off) mood_swing=9*mood_period; /* comms off inter mood time */
+nsl_mon_delay=200; /* millisecond delay between cycles */
+
+void face_sweep(int num,pat)
+{ int n;
+  for(n=0;n<num;++n)
+    {driver("pattern",0);step(mood_swing); if(nsl_stop)  break;
+     driver("pattern",pat);step(mood_swing); if(nsl_stop) break;
+    }
+}
+
+void face_demo()
+{ face_sweep(3,3); if(nsl_stop) return;
+  face_sweep(3,4); if(nsl_stop) return;
+  face_sweep(3,1); if(nsl_stop) return;
+  face_sweep(3,2);
+}
+
+/*
+printf("Running Face Demo\n");
+load moody face;
+moody:;
+face_demo();
+*/
+printf("Try: driver(\"setup\"); face_demo();\n");

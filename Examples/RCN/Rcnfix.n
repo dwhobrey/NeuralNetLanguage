@@ -1,0 +1,110 @@
+/* NeSeL v2.0 April 1989 */
+/* RCN fixed topology neural net */
+/* Compile with nsl1 options -aqvmh; and no options to nsltox */
+pragma header 0
+#include <math.h>
+pragma header -1
+#include "nsltype.h"
+#include "nslstd.h"
+#include "nslios.h"
+
+#define RCN_POOL 20 /* size of recognition node pool */
+
+node {float output;} data_ds;
+node {float output,recowt[RCN_POOL],compwt[RCN_POOL],*input;} comp_fix_ds;
+node {float output,matout,state,ract;} reco_fix_ds;
+
+node
+{ BOOL vigreset;
+  int winner;
+  float alpha,vigilance,tau,tau2,Aconst;
+  comp_fix_ds complay[];
+  reco_fix_ds recolay[RCN_POOL];
+  float *reset;
+} rcn_fix_ds;
+
+void compare_node(rp,cp,prod1)
+  rcn_fix_ds *rp; comp_fix_ds *cp; float prod1;
+{ float staval=cp->output,prod2; int kk;
+  /* activity updates */
+  prod1=prodff(rp->recolay,&(rp->recolay->matout),
+               rp->recolay,&(rp->recolay->output),
+               rp->size.recolay,0,0);
+  prod2=prodff(rp->recolay,&(rp->recolay->output),
+               cp->recowt,cp->recowt,
+               RCN_POOL,1,0);
+  staval+= (- staval
+            + inf(cp->input) * (1.0 - rp->alpha * prod1)
+            + rp->alpha * prod2
+           ) / rp->tau;
+  staval=generic_bound(staval,(float)1.0,(float)0.0);
+  cp->output=staval;
+  /* learning updates */
+  for(kk=0;kk<RCN_POOL;++kk)
+    {cp->recowt[kk]+=rp->recolay[kk].output
+       * (staval - cp->recowt[kk]) / rp->tau2;}
+}
+
+void recognition_node(rp,cp,rr,sum,cnorm)
+  rcn_fix_ds *rp; reco_fix_ds *cp; int rr; float sum,cnorm;
+{ float matval=cp->matout,resval=cp->ract,staval=cp->state,sigval,prod1,wadj;
+  int kk,rnum=RCN_POOL,cnum=rp->size.complay;
+  /* activity updates */
+  if(rp->winner==rr) sigval=(float)1.0; else sigval=(float)0.0;
+  prod1=prodff(rp->complay,&(rp->complay->output),
+               rp->complay,&(rp->complay->compwt[rr]),cnum,0,0);
+  sum+=cp->output;
+  sum/=(1.1+(float)rnum); /* normalise sum */
+  staval+= (- (float)1.0 * staval
+            + (1.0-staval) * (prod1 + sigval)
+            - (rp->Aconst + staval) * (sum + resval)
+           ) / rp->tau;
+  cp->state=generic_bound(staval,(float)1.0,(float)0.0);
+  cp->output=sigval;
+  /* learning updates */
+  cp->ract+= ((float)(rp->vigreset) * (sigval + matval) - resval
+          ) / rp->tau;
+  cp->matout+= sigval * (1.0 - matval) / rp->tau2;
+  for(kk=0;kk<cnum;++kk)
+    {wadj= rp->complay[kk].output
+           - cnorm * rp->complay[kk].compwt[kk];
+     rp->complay[kk].compwt[kk]+=
+         sigval * wadj / rp->tau2;}
+}
+
+rcn_fix_ds rcn_fix_node()
+  in complay; out recolay;
+{ float value,cnorm,curval; int size=$size.complay;
+  cnorm=normf($complay,&($complay->output),size,0);
+  value = $vigilance
+          * cnorm * normf($complay,&($complay->input),size,1)
+          - prodff($complay,&($complay->input),
+                   $complay,&($complay->output),size,1,0);
+  $vigreset = (BOOL)(value>=(float)0.0);
+  value=prodff($recolay,&($recolay->matout),
+               $recolay,&($recolay->output),
+               RCN_POOL,0,0);
+  for(kk=0;kk<size;++kk)
+    compare_node($,$complay+kk,value);
+  value=(float)0.0; $winner=0;
+  for(kk=0;kk<RCN_POOL;++kk)
+     {if((curval=$recolay[kk].output)>value) {value=curval; $winner=kk;}
+     }
+  value=sumf($recolay,&($recolay->output),RCN_POOL,0);
+  for(kk=0;kk<RCN_POOL;++kk)
+    recognition_node($,$recolay+kk,kk,value,cnorm)
+}
+
+data_ds data_node(){}
+
+/* Fix topology version of RCN net */
+net rcn(data_size)
+  in input; out output;
+{ data_node()[data_size];
+  rcn_fix_node() output[*]: recolay[*],
+    complay[*]=data_node[*];
+}
+
+net network()
+{ rcn(10);
+}

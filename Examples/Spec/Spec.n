@@ -1,0 +1,256 @@
+/* Specht Prob neural net
+* NeSeL v1.0 April 1989.
+*/
+pragma header 0
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include <malloc.h>
+#include <stdarg.h>
+#include <math.h>
+
+#include "nsltype.h"
+#include "nslstd.h"
+#include "nslios.h"
+#include "nslwsio.h"
+pragma header -1
+
+node /* spec demo io ds */
+{long xx;
+ long b_ctrl,b_user,b_in,b_out,b_pat,b_sum;
+ int num_in,num_out,num_pat,num_sum;
+ int scr_t, /* wnd for time */
+       scr_a, /* wnd for node activities etc */
+       scr_w, /* wnd for node output levels & weights */
+       scr_i; /* info wnd */
+} sio_ds;
+
+node /* globals used by spec */
+{ sio_ds sio;
+  NSLNSLio args;
+} spec_io_ds;
+
+node
+{ float weight;
+  float *input;
+} graded_synapse;
+
+node
+{ float output;
+  float *input;
+} spec_data_ds;
+
+node
+{ BOOL output,error[];
+  float *input[];
+  BOOL *desired,*learn;
+} spec_out_ds;
+
+node
+{ float output,norm;
+  graded_synapse input[];
+  BOOL *delay,*learn,*reset,*error;
+} spec_sum_ds;
+
+node
+{ BOOL isfree;
+  float output;
+  graded_synapse input[];
+  float *sigsq;
+  BOOL *winner,*learn,*reset;
+} spec_pat_ds;
+
+node
+{ BOOL edge,delay,output[];
+  BOOL *learn,*input[];
+} spec_select_ds;
+
+node
+{ float sigsq;
+  BOOL reset,learn,*uslearn,*usreset;
+} spec_ctrl_ds;
+
+node
+{ BOOL learn,reset;
+  float pattern[];
+  BOOL desired[],*specout[];
+} spec_user_ds;
+
+spec_io_ds spec_io_node()
+{
+  switch($args.cmd)
+    {case NSLIO_SETUP:
+       spec_setup(net);
+       spec_update(net,$args.args);
+       break;
+     case NSLIO_INIT: break;
+     case NSLIO_CLOSE:
+       w_close($sio.scr_a);
+       w_close($sio.scr_w);
+       break;
+     case NSLIO_REDRAW: spec_draw(net,$args.args); break;
+     case NSLIO_PATTERN: spec_probe(net,$args.args); break;
+     case NSLIO_PRE: break;
+     case NSLIO_POST: spec_update(net,$args.args); break;
+     case NSLIO_USER: spec_driver(net,$args.args); break;
+     default:;
+    }
+  $args.cmd=NSLIO_NULL;
+}
+
+spec_ctrl_ds spec_ctrl()
+  in uslearn,usreset; out learn,reset,sigsq;
+{ $learn=inx(BOOL,$uslearn);
+  $reset=inx(BOOL,$usreset);
+}
+
+/* allocate a new pattern unit */
+spec_select_ds select_node()
+ in input; out output,delay;
+{ int nn,xx=(-1);
+  if(inx(BOOL,$$learn))
+    {if($edge)  /* delay 1 cycle before activating sum_nodes */
+       {$delay|=TRUE; return;}
+     for(nn=0;nn<$size.input;++nn)
+       {if(inx(BOOL,$input[nn])) xx=nn; /* find a free pat_node */
+        $output[nn]=FALSE;
+       }
+     if(xx>=0) {$output[xx]=TRUE; $edge=TRUE;}
+    }
+  else {$edge=FALSE; $delay=FALSE;}
+}
+
+/* Each pattern node when allocated responds most vigourously to a learnt
+* training pattern
+*/
+spec_pat_ds pat_node()
+  in input,reset,winner; out output,isfree;
+{ int xx; float prod;
+  if(inx(BOOL,$$reset)) $isfree=TRUE;
+  if(inx(BOOL,$$learn))
+    {if(inx(BOOL,$winner)) /* node was selected to learn current pattern */
+       {if($isfree)
+          {$isfree=FALSE;
+           for(xx=0;xx<$size.input;++xx)
+              $input[xx].weight=(float)2.0*inf($input[xx].input)-(float)1.0;
+          }
+        $output=(float)1.0; /* signal winner to sum_nodes */
+       }
+     else $output=(float)0.0;
+    }
+  else if(!$isfree) /* update output if node in use */
+    {prod=liprodff($input,&($input->input),
+                 $input,&($input->weight),$size.input,net,0,
+                 (float)2.0,(float)-1.0);
+     $output=(float)exp((double)((prod-(float)$size.input)/
+       ((float)$size.input * inf($$sigsq))));
+    }
+  else $output=(float)0.0;
+}
+
+/* These nodes collect together pat_node outputs belonging to the same
+* training category */
+spec_sum_ds sum_node()
+  in input,error,delay; out output;
+{ int xx,nn,num=0; BOOL error;
+  if(inx(BOOL,$$reset))
+    {for(xx=0;xx<$size.input;++xx) $input[xx].weight=(float)0.0;}
+  /* during learning have to select valid pat_node inputs belonging to the */
+  /* trainging category. Excluded pat_nodes have a zero weight */
+  if(inx(BOOL,$$learn))
+    {$norm=(float)0.0;
+     if(inx(BOOL,$delay))
+       {/* during learning the winning pat_node outputs a 1.0 signal */
+        /* the rest output 0.0 */
+        for(xx=0;xx<$size.input;++xx)
+          {if(inf($input[xx].input)==(float)1.0) {++num; nn=xx;}}
+        /* the error signal from out_nodes indicates if pat_node belongs to */
+        /* the category represented by sum_node */
+        error=inx(BOOL,$error);
+        if(num==1) $input[nn].weight=(float)!error;
+        /* calculate output normalising factor */
+        for(xx=0;xx<$size.input;++xx) $norm+=$input[xx].weight;
+       }
+     $output=(float)0.0;
+    }
+  else
+   {if($norm>(float)0.0)
+      $output=prodff($input,&($input->input),
+                $input,&($input->weight),$size.input,net,0)/$norm;
+    else $output=(float)0.0;
+   }
+}
+
+/* Each out_node takes an input from two sum_nodes
+* and outputs binary value depending on sum_nodes difference */
+spec_out_ds out_node()
+{ BOOL des;
+  /* during learning the out_nodes signals to sum_node if category correct */
+  if(inx(BOOL,$$learn))
+    {des=inx(BOOL,$desired);
+     $error[0]=(BOOL)!des; $error[1]=des;
+     $output=des;
+    }
+  else $output=(BOOL)(inf($input[0])>inf($input[1]));
+}
+
+spec_data_ds data_node()
+  in input; out output;
+{ $output=inf($input);
+}
+
+spec_user_ds spec_user()
+  in specout; out pattern,desired,reset,learn;
+{
+}
+
+net spec(data_size,pool_size,out_size)
+  in input,reset,learn,desired; out output;
+{ data_node()[data_size] input:;
+  pat_node()[pool_size]
+    [*]\input[+]=data_node[*]\output,
+    [*]\winner=select_node\output[&?];
+  select_node()
+    input[+]=pat_node[*]\isfree;
+  sum_node()[2*out_size]
+    [*]\input[+]=pat_node[*]\output,
+    [*]\error=out_node[*]\error[0..1],
+    [*]\delay=select_node\delay;
+  out_node()[out_size] output:, desired: desired,
+    [*]\input[0..1]=sum_node[*]\output;
+  spec_ctrl() global:, learn: uslearn, reset: usreset;
+} =
+{ data_node = {0.0},
+  pat_node = {TRUE,0.0,{0.0}},
+  select_node = {0,0,{0}},
+  sum_node = {0.0,0.0,{0.0}},
+  out_node = {0.0,{0}},
+  spec_ctrl = {(float)4.0,0,0}
+}
+
+#define SPECIN 2
+#define SPECPOOL 4
+#define SPECOUT 1
+net network()
+{ spec(SPECIN,SPECPOOL,SPECOUT)
+    input[*]=spec_user\pattern[&?0],
+    desired[*]=spec_user\desired[&?0],
+    reset=spec_user\reset,
+    learn=spec_user\learn;
+  spec_user()
+    specout[+]=spec\output[*];
+  spec_io_node();
+} =
+{ spec_io_node =
+     {{0,
+      $.$..\spec\spec_ctrl,
+      $.$..\spec_user,
+      $.$..\spec\data_node,
+      $.$..\spec\out_node,
+      $.$..\spec\pat_node,
+      $.$..\spec\sum_node,
+      SPECIN,SPECOUT,SPECPOOL,2*SPECOUT,
+      0,0,0,0,0
+     }},
+  spec_user = {0,0,{(float)0.0},{0}}
+}

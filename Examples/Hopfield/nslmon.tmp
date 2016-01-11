@@ -1,0 +1,5 @@
+printf("For demonstration try: call hop;\n");;
+call hop;
+hop_demo();
+view hop.nat;
+quit;

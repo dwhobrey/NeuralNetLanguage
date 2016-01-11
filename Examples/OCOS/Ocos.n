@@ -1,0 +1,142 @@
+/* NeSeL v2.0 April 1989 */
+/* OCOS neural net demo */
+/* Compile with nsl1 options -aqvmh; and no options to nsltox */
+pragma header 0
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include <malloc.h>
+#include <stdarg.h>
+#include <math.h>
+
+#include "nsltype.h"
+#include "nslstd.h"
+#include "nslios.h"
+#include "nslwsio.h"
+pragma header -1
+
+node /* demo io ds */
+{int fld_siz;
+ long bs_hd, /* base handle for display node state routine */
+  	d0,c0,xx;
+ int scr_t, /* wnd for time */
+	scr_d, /* wnd for input domain */
+	scr_l, /* wnd for node output levels */
+	scr_s, /* wnd for state values */
+	trk_probe, /* track hd for probe */
+	numbar, /* number of bars of state values (with 3 rows each bar) */
+	numlin, /* number of state values per line */
+	numelm; /* number of chrs per state value */
+ int *my_tracks; /* list of wnd track handles */
+} nio_ds;
+
+node /* io used by ocos */
+{ nio_ds nio; /* must be first member */
+  NSLNSLio args;
+} ocos_io_ds;
+
+node
+{ float weight;
+  float *input;
+} graded_synapse;
+
+node
+{ BOOL isnew;
+  float output,oldout;
+} data_ds;
+
+node
+{ BOOL active;
+  int stable;
+  float state,output,oldout;
+  graded_synapse comp[];
+  float *ocos[];
+  BOOL *reset,*busy;
+  float *AA,*BB,*CC,*GG,*TT;
+} ocos_ds;
+
+node
+{ BOOL reset,busy;
+  float AA,BB,TT,GG,CC;
+  BOOL *ocos[],*isnew[];
+} ocos_ctrl_ds;
+
+ocos_io_ds ocos_io_node()
+{ switch($args.cmd)
+    {case NSLIO_SETUP:
+       ocos_setup(net,$nio.fld_siz);
+       ocos_update(net,$args.args);
+       break;
+     case NSLIO_INIT: break;
+     case NSLIO_CLOSE:
+       w_close($nio.scr_d);
+       w_close($nio.scr_l);
+       w_close($nio.scr_s);
+       if($nio.my_tracks) {lfree($nio.my_tracks); $nio.my_tracks=NULL;}
+       break;
+     case NSLIO_REDRAW: ocos_draw(net,$args.args); break;
+     case NSLIO_PATTERN: ocos_probe(net,$args.args); break;
+     case NSLIO_PRE: break;
+     case NSLIO_POST: ocos_update(net,$args.args); break;
+     default:;
+    }
+  $args.cmd=NSLIO_NULL;
+}
+
+ocos_ctrl_ds ocos_ctrl()
+  in ocos,isnew; out busy,reset;
+{ $reset=(BOOL)(sumc($isnew,$isnew,$size.isnew,net)!=0);
+  if($reset) $busy=TRUE;
+  else if(sumc($ocos,$ocos,$size.ocos,net)==$size.ocos) $busy=FALSE;
+}
+
+ocos_ds ocos_node()
+{ float sum,prod; int rnum=$size.ocos,cnum=$size.comp;
+  prod=prodff($comp,&($comp->input),
+               $comp,&($comp->weight),cnum,net,0)/cnum;
+  sum=sumf($ocos,$ocos,rnum,net)/rnum;
+  if(inx(BOOL,$reset))
+    {$state=(float)0.5; $stable=0; $oldout=(float)0.0; $output=(float)0.5;}
+  else /* main state update equation follows... recurrent ocos */
+  if(inx(BOOL,$busy))
+    $state+= (- inf($$AA) * $state + (inf($$BB) - $state) * $output
+              - $state * sum + prod)/ inf($$TT);
+  $output=generic_sigmoid($state,(float)1.0,(float)0.0,
+              inf($$GG),inf($$CC));
+  $output=generic_bound($output,(float)1.0,(float)0.0);
+  if($output==$oldout&&!$reset) ++$stable; else $stable=0;
+  $oldout=$output;
+  $active=(BOOL)($stable>2);
+  dsp_state(net,$node.name,$output,sum,prod);
+}
+
+data_ds data_node()
+{ $isnew=(BOOL)($output!=$oldout);
+  $oldout=$output;
+}
+
+/* On-centre, off-surround net. See Grossberg et al. */
+net ocos(data_size,ocos_size)
+  in input; out output;
+{ data_node()[data_size];
+  ocos_node()[ocos_size]
+    [*]\reset=ocos_ctrl\reset,
+    [*]\busy=ocos_ctrl\busy,
+    [*]\ocos[&!]=[*]--~~,
+    [*]\comp[&!]=data_node[*];
+  ocos_ctrl() global:,
+    ocos[+]=ocos_node[*]\active,
+    isnew[+]=data_node[*]\isnew;
+  ocos_io_node();
+} =
+{ data_node = (data_ds){0,(float [])[0.4,0.7],0.0},
+  ocos_node = (ocos_ds){0,0,0.0,0.0,0.0,
+     {(float)[lnorm((float)[rndf();rndf()])]}},
+  ocos_ctrl = {0,0,1.0,1.0,4.0,10.0,-0.5},
+  ocos_io_node = {{ocos_size,$.$..\ocos_node,$.$..\data_node,
+               0,0,0,0,0,0,0,0,0,0,(int *)0L}}
+}
+
+net network()
+{ ocos(2,20);
+}

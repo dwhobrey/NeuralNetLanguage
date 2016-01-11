@@ -1,0 +1,250 @@
+/* NeSeL v1.0 April 1989. Bep neural net */
+pragma header 0
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include <malloc.h>
+#include <stdarg.h>
+#include <math.h>
+
+#include "nsltype.h"
+#include "nslstd.h"
+#include "nslios.h"
+#include "nslwsio.h"
+pragma header -1
+
+node /* bep demo io ds */
+{long xx;
+ long b_ctrl,b_user,b_in,b_out,b_hid;
+ int num_in,num_out,num_hid;
+ int num_layers,layers[4];
+ int scr_t, /* wnd for time */
+       scr_a, /* wnd for node activities etc */
+       scr_w, /* wnd for node output levels & weights */
+       scr_i, /* info wnd */
+       scr_g; /* graph wnd */
+} bio_ds;
+
+node /* io used by bep */
+{ bio_ds bio; /* must be first member */
+  NSLNSLio args;
+} bep_io_ds;
+
+node
+{ float weight,Owt,Dwt;
+  float *input;
+} bep_synapse = {,0.0,0.0};
+
+node
+{ float output,*input;
+} bep_in_ds;
+
+node
+{ float output,thres,Othres,Dthres,error[],*desired;
+  bep_synapse input[];
+  BOOL *reset,*learn,*update;
+  float *sg,*sa,*sb,*sc,*eps,*tea,*momen;
+} bep_out_ds;
+
+node
+{ float output,thres,Othres,Dthres,error[],*delta[];
+  bep_synapse input[];
+  BOOL *reset,*learn,*update;
+  float *sg,*sa,*sb,*sc,*eps,*tea,*momen;
+} bep_hid_ds;
+
+node
+{ BOOL reset,update,output[];
+  int layer;
+  float sg,sa,sb,sc,eps,tea,momen;
+  BOOL *usreset,*usupdate,*learn;
+} bep_ctrl_ds;
+
+node
+{ BOOL learn,reset,update;
+  float pattern[],desired[],*bepout[];
+} user_ds;
+
+bep_io_ds bep_io_node()
+{ switch($args.cmd)
+    {case NSLIO_SETUP:
+       bep_setup(net);
+       bep_update(net,$args.args);
+       break;
+     case NSLIO_INIT: break;
+     case NSLIO_CLOSE:
+       w_close($bio.scr_a);
+       w_close($bio.scr_w);
+       break;
+     case NSLIO_REDRAW: bep_draw(net,$args.args); break;
+     case NSLIO_PATTERN: bep_pattern(net,$args.args); break;
+     case NSLIO_PRE: break;
+     case NSLIO_POST: bep_update(net,$args.args); break;
+     case NSLIO_USER: bep_user(net,$args.args); break;
+     default:;
+    }
+  $args.cmd=NSLIO_NULL;
+}
+
+/* this dummy node is used to illustrate how the bep net would be
+* connected to another net */
+user_ds user() {}
+
+/* controls learning by piping a learn signal to each layer in turn */
+bep_ctrl_ds bep_ctrl()
+  in learn,usreset,usupdate; out output,reset,update;
+{ int nn=$size.output;
+  $reset=inx(BOOL,$usreset); $update=inx(BOOL,$usupdate);
+  if(inx(BOOL,$learn)&&!$reset)
+    {$output[$layer]=FALSE;
+     ++$layer; if($layer>=nn) $layer=0;
+     $output[$layer]=TRUE;
+    }
+  else
+   {$layer=nn-1; while(nn--) $output[nn]=FALSE;}
+}
+
+bep_in_ds in_node()
+  in input; out output;
+{ $output=inf($input);
+}
+
+/* Output & hidden nodes have weight & bias learning & momentum
+*  See Rumelhart et al. */
+bep_out_ds out_node()
+  in input,learn,desired,update,reset; out output,error;
+{ float prod,myeps,mytea,mydelta,mymomen,Dthres,Dwt; int xx;
+  if(inx(BOOL,$$reset)) /* reset bep wts etc */
+    {$Dthres=(float)0.0; $Othres=(float)0.0; $thres=rndf()-(float)0.5;
+     for(xx=0;xx<$size.input;++xx)
+       {$input[xx].weight=rndf()/(float)4.0;
+        $input[xx].Dwt=(float)0.0;
+        $input[xx].Owt=(float)0.0;
+       }
+     $output=(float)0.0; return;
+    }
+  prod=prodff($input,&($input->input),
+              $input,&($input->weight),$size.input,net,NULL);
+  $output=generic_sigmoid((float)(prod+$thres),inf($$sa),inf($$sb),
+           inf($$sg),inf($$sc));
+  if(inx(BOOL,$learn))
+    {mydelta=$output * ((float)1.0 - $output) * (inf($desired) - $output);
+     $Dthres+=mydelta;
+     for(xx=0;xx<$size.input;++xx)
+        {$input[xx].Dwt+=mydelta * inf($input[xx].input);
+         $error[xx]=mydelta * $input[xx].weight;
+        }
+    }
+  if(inx(BOOL,$$update))
+    {mymomen=inf($$momen); myeps=inf($$eps); mytea=inf($$tea);
+     Dthres=mytea * $Dthres + mymomen * $Othres;
+     $thres+=Dthres; $Othres=Dthres; $Dthres=(float)0.0;
+     for(xx=0;xx<$size.input;++xx)
+        {Dwt=myeps * $input[xx].Dwt + mymomen * $input[xx].Owt;
+         $input[xx].weight+=Dwt;
+         $input[xx].Owt=Dwt; $input[xx].Dwt=(float)0.0;
+        }
+    }
+  bep_state(net,$node.name,$output,$thres,$input,$size.input,FALSE);
+}
+
+bep_hid_ds hid_node()
+  in input,learn,delta,update,reset; out output,error;
+{ float prod,sum,mydelta,mytea,myeps,mymomen,Dthres,Dwt; int xx;
+  if(inx(BOOL,$$reset)) /* reset bep wts etc */
+    {$Dthres=(float)0.0; $Othres=(float)0.0; $thres=rndf()-(float)0.5;
+     for(xx=0;xx<$size.input;++xx)
+       {$input[xx].weight=rndf()/(float)4.0;
+        $input[xx].Dwt=(float)0.0;
+        $input[xx].Owt=(float)0.0;
+       }
+     $output=(float)0.0; return;
+    }
+  prod=prodff($input,&($input->input),
+              $input,&($input->weight),$size.input,net,NULL);
+  $output=generic_sigmoid((float)(prod+$thres),inf($$sa),inf($$sb),
+           inf($$sg),inf($$sc));
+  if(inx(BOOL,$learn))
+    {sum=sumf($delta,$delta,$size.delta,net);
+     mydelta=$output * ((float)1.0 - $output) * sum;
+     $Dthres+=mydelta;
+     for(xx=0;xx<$size.input;++xx)
+        {$input[xx].Dwt+=mydelta * inf($input[xx].input);
+         if($size.error) $error[xx]=mydelta * $input[xx].weight;
+        }
+    }
+  if(inx(BOOL,$$update))
+    {mymomen=inf($$momen); myeps=inf($$eps); mytea=inf($$tea);
+     Dthres=mytea * $Dthres + mymomen * $Othres;
+     $thres+=Dthres; $Othres=Dthres; $Dthres=(float)0.0;
+     for(xx=0;xx<$size.input;++xx)
+        {Dwt=myeps * $input[xx].Dwt + mymomen * $input[xx].Owt;
+         $input[xx].weight+=Dwt;
+         $input[xx].Owt=Dwt; $input[xx].Dwt=(float)0.0;
+        }
+    }
+  bep_state(net,$node.name,$output,$thres,$input,$size.input,TRUE);
+}
+
+/* This recursive def allows us to spec multiple layered bep nets */
+net hid_layers(%num,%siz,rest)
+{ hid_node()[siz] first:,
+    [*]\learn=$$output[num],
+$if(num<2) /* last layer */
+    last:;
+$else /* multiple hidden layers */
+    [*]\delta[*]=hid_layers\first[*]\error[&?2];
+  hid_layers(num-1,rest) last: last,
+    first[*]\input[*]=hid_node[*]\output;
+$endif
+}
+/* Basic bep net. This nifty spec caters for all multiple layered/sized nets */
+/*  Macro list `rest' specifies size of each hidden layer */
+net bep(%in_size,%out_size,%numhid,rest)
+  in input,desired,learn,reset,update; out output;
+{ out_node()[out_size]
+    output:, desired: [*]\desired,
+    [*]\input[+]=hid_layers\last\output[*],
+    [*]\learn=bep_ctrl\output[0];
+  hid_layers(numhid,rest)
+    first[*]\input=in_node[*],
+    last[*]\delta[*]=out_node[*]\error[&?2];
+  in_node()[in_size]
+    input:;
+  bep_ctrl()
+    global:, reset: usreset, update: usupdate, learn: learn;
+} =
+{ hid_layers\**\hid_node = {0.0,rndf()-0.5,0.0,0.0,{0.0}},
+  out_node = {0.0,rndf()-0.5,0.0,0.0,{0.0}},
+  in_node = {0.0},
+  **\weight=(rndf()-0.5)/2.0,
+  bep_ctrl = {FALSE,FALSE,{FALSE},$|.$output-1,1.0,1.0,0.0,0.0,0.2,0.1,0.95}
+}
+
+#define BEP_IN 2
+#define BEP_OUT 1
+#define BEP_NUM_HID 1
+#define BEP_HID_ONE 2
+net network()
+{ bep(BEP_IN,BEP_OUT,BEP_NUM_HID,BEP_HID_ONE)
+    input[*]=user\pattern[&?0],
+    desired[*]=user\desired[&?0],
+    reset=user\reset,
+    update=user\update,
+    learn=user\learn;
+  user()
+    bepout[+]=bep\output[*];
+  bep_io_node();
+} =
+{ user = {FALSE,FALSE,FALSE,{0.0},{0.0}},
+  bep_io_node =
+     {{0,
+      $.$..\bep\bep_ctrl,
+      $.$..\user,
+      $.$..\bep\in_node,
+      $.$..\bep\out_node,
+      $.$..\bep\hid_layers\hid_node,
+      BEP_IN,BEP_OUT,(BEP_HID_ONE),BEP_NUM_HID,{BEP_HID_ONE,0,0,0},
+      0,0,0,0,0
+     }}
+}

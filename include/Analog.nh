@@ -1,0 +1,55 @@
+/* Example neural net library file for test purposes
+* Some simple neuron definitions
+*
+* NeSeL v1.0 April 1989.
+*/
+
+typedef float analog;
+
+node
+{ analog weight;
+  analog *input;
+} graded_synapse = {weight=0.11};
+
+node
+{ analog gain;
+  analog output;
+  char *path;
+  graded_synapse synapse[];
+  analog state[3];
+} grade_sum  =
+{ 0.22, 0.33, "it's path", state=0.44,{(analog)0.55,we* =0.66}
+},anlog_sum;
+
+node
+{ discrete state;
+  analog gain;
+  discrete output;
+  graded_synapse synapse[];
+} disc_sum;
+
+grade_sum graded_neuron(time.rate,time.wait)
+  inout synapse; out output;
+{ int i=0;
+  analog sum=(analog)0.0;
+  while(i<$.size.synapse)
+       sum += $.synapse[i].weight * inf($.synapse[i].input);
+  return($.state[3]=generic_sigmoid(sum,$.gain,
+              (float)1.0,(float)-1.0,(float)0.0) );
+} =
+{ state[.]=0.77,
+  synapse[.].weight=0.88
+}
+
+net generic_feedfwd(ner_type,size)
+  inout *;
+{ ner_type##_neuron()[size]
+  input[*]: [*],
+  output[*]: [*];
+}
+
+net feedfwd(size)
+{ generic_feedfwd(graded,size)
+    input[*]: input[*],
+    output[*]: output[*];
+}

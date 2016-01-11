@@ -1,0 +1,5 @@
+/* Name: nslusrfn.n - Network file for generating nsl2 user function file
+*  NeSeL v2.0 April 1989  Neural Network Specification Language
+*/
+#include "..\nsllib\nslstd.c"
+

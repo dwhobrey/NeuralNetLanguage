@@ -1,0 +1,130 @@
+/* Example neural net library file
+* Some popular net definitions
+*
+* NeSeL v1.0 April 1989.
+*/
+#define RCNTER_DIM 10 /* error code returned if dimension mismatch */
+
+node /* globals used by rcn */
+{ float sg,sa,sb,sc,tau,tau2;
+} rcn_ds;
+
+node
+{ float weight;
+  float *input;
+} graded_synapse;
+
+node
+{ float output,vigilance;
+  float *data[],*comp[];
+} reset_ds;
+
+node
+{ float output;
+} data_ds;
+
+node
+{ float output,alpha,*input,*match[];
+  graded_synapse reco[];
+  float *tau,*tau2;
+} compare_ds;
+
+node
+{ float output,state,ract,match,Aconst,*reset,*reco[];
+  graded_synapse comp[];
+  float *sg,*sa,*sb,*sc,*tau,*tau2;
+} recognition_ds;
+
+#define rcn_sig(x) generic_sigmoid((float)x,inf($$sg),inf($$sa),inf($$sb),inf($$sc))
+
+rcn_ds rcn_node(){}
+
+reset_ds reset_node(vigilance)
+  in data,comp; out output;
+{ float value; int size=$.size.data;
+  if(size!=$.size.comp) {nsl_abort=RCNTER_DIM; return;} /* dim mismatch */
+  value = $.vigilance
+          * normfi($.data,$.data,size)
+          * normfi($.comp,$.comp,size)
+          - prodfii($.data,$.data,$.comp,$.comp,size);
+  $.output = generic_limiter(value,(float)0.0,(float)1.0,(float)0.0);
+}
+
+recognition_ds recognition_node()
+  in reset,reco,comp; out output,ract,match;
+{ float matval=$.match,resval=$.ract,
+     staval=$.state,sigval=$.output,cnorm,prod1,sum,wadj;
+  int kk,rnum=$.size.reco,cnum=$.size.comp;
+  /* activity updates */
+  prod1=prodfi($.comp,&($.comp->input),
+               $.comp,&($.comp->weight),cnum);
+  sum=sumfi($.reco,$.reco,rnum);
+  staval+= (- staval
+            + (1.0-staval) * (prod1 + sigval)
+            - ($.Aconst + staval) * (sum + resval)
+           ) / inf($$tau);
+  staval=generic_bound(staval,(float)1.0,(float)0.0);
+  $.state= staval;
+  $.output= rcn_sig(staval);
+  /* learning updates */
+  $.ract+= (inf($.reset) * (sigval + matval) - resval
+           ) / inf($$tau);
+  $.match+= sigval * (1.0 - matval) / inf($$tau2);
+  cnorm=normfi($.comp,&($.comp->input),cnum);
+  for(kk=0;kk<cnum;++kk)
+    {wadj= inf($.comp[kk].input)
+           - cnorm * $.comp[kk].weight;
+     $.comp[kk].weight+=
+         sigval * wadj / inf($$tau2);}
+}
+
+compare_ds compare_node()
+  in input,match,reco; out output;
+{ float staval=$.output,prod1,prod2; int kk,rnum=$.size.reco;
+  /* activity updates */
+  prod1=prodfii($.match,$.match,
+                $.reco,&($.reco->input),
+                $.size.reco);
+  prod2=prodfi($.reco,&($.reco->input),
+               $.reco,&($.reco->weight),
+               $.size.reco);
+  staval+= (- staval
+            + inf($.input) * (1.0 - $.alpha * prod1)
+            + $.alpha * prod2
+           ) / inf($$tau) ;
+  staval=generic_bound(staval,(float)1.0,(float)0.0);
+  $.output=staval;
+  /* learning updates */
+  for(kk=0;kk<rnum;++kk)
+    {$.reco[kk].weight+=inf($.reco[kk].input)
+       * (staval - $.reco[kk].weight) / inf($$tau2);}
+}
+
+data_ds data_node()
+{ /* doesn't do anything yet */
+}
+
+net rcn(data_size,reco_size)
+  in input; out output;
+{ data_node()[data_size];
+  compare_node()[data_size]
+    [*]=data_node[*],
+    [*]\match[&!]=recognition_node[*]\match,
+    [*]\reco[&!]=recognition_node[*];
+  recognition_node()[reco_size]
+    [*]\reset=reset_node,
+    [*]\reco[&!]=[*]--~~,
+    [*]\comp[&!]=compare_node[*];
+  reset_node()
+    data[+]=data_node,
+    comp[+]=compare_node;
+  rcn_node() global:;
+} =
+{ dat* = (data_ds){(float [])[0.4,0.7]},
+  rec* = (recognition_ds){0.0,0.0,0.0,0.0,1.1*sqrt((double)data_size),,,
+           {(float)[vnorm((float)[rndf();rndf()])]}},
+  com* = (compare_ds){0.0,0.95,,,{0.0}},
+  res* = {0.0,0.95},
+  /* Note the sigmoid parameters are quite critical for recognition OCOS */
+  rcn* = {25.0,1.0,0.0,-0.2,8.0,20.0}
+}

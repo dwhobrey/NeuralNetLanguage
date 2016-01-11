@@ -1,0 +1,90 @@
+/* NeSeL v2.0 April 1989 */
+/* Hopfield neural net: partition version (untested) */
+#include <math.h>
+#include "nsltype.h"
+#include "nslstd.h"
+#include "nslios.h"
+
+node
+{ float weight; float *input;} graded_synapse;
+
+node
+{ float output,state,*probe;
+  graded_synapse input[];
+} hop_tree;
+
+node
+{ hop_tree part[];
+  BOOL *reset;
+  float *sg,*sa,*sb,*sc,*tau,*tau2;
+} hop_tree_ds;
+
+node
+{ BOOL reset;
+  int stable;
+  float sg,sa,sb,sc,tau,tau2,output[];
+} hop_ctrl_ds;
+
+hop_ctrl_ds hop_ctrl()
+  out output,reset;
+{ if($stable) {$reset=TRUE; --$stable;}
+  else $reset=FALSE;
+}
+
+/* Basic graded hop node, assumes preprogrammed weights */
+hop_tree_ds hop_part_node()
+  in reset; inout part;
+{ float prod,staval; hop_tree *hp=$part;
+  for(nn=0;nn<$size.part;++nn)
+     {if(inx(BOOL,$reset)) staval=inf(hp->probe);
+      else
+        {staval=hp->state;
+         prod=liprodff(hp->input,&(hp->input->input),
+                       hp->input,&(hp->input->weight),hp->size.input,
+                       1,0,(float)2.0,(float)-1.0);
+         staval+=( - staval / inf($$tau)
+                 + prod / inf($$tau2) );
+        }
+      staval=generic_bound(staval,(float)1.0,(float)0.0);
+      hp->state=staval;
+      hp->output=generic_sigmoid((float)staval,inf($$sa),inf($$sb),
+              inf($$sg),inf($$sc));
+      ++hp;
+     }
+}
+
+/* Partitioned hop net, fully connected apart from no self connections
+*  num_parts=num partitions, num_nodes = num regular nodes per partition */
+net hoppart(num_parts,num_nodes,noself,pa,pb,#pats,test_pat)
+  in input; out output;
+{ hop_part_node()[num_parts]
+   [*]\part[0..(num_nodes-1)]\input[0..(num_parts*num_nodes-1)]=
+     [*]\part[0..(num_nodes-1)],
+   [*]\part[0..(num_nodes-1)]\input[(num_nodes*($#-1))+($#0)]= --~..\output,
+   [*]\part[0..(num_nodes-1)]\probe=hop_ctrl\output[&?],
+   [*]\reset=hop_ctrl\reset;
+  hop_ctrl() global:;
+} =
+{ hop_part_node[*]\part = {0.5,0.5},
+  hop_part_node[*]\part[*]\input[*]\weight=
+    (float)lhopsum(($#?1)*$#?2,$#?3,noself,pa,pb,pats),
+  hop_ctrl = {TRUE,2,20.0,1.0,0.0,-0.5,12.0,(float)(num_parts/4),{test_pat}},
+}
+
+net network()
+{ hoppart(4,6,0,2.0,-1.0,
+     "(float)[1,0,0,0,0,1,\
+              0,1,0,0,1,0,\
+              0,0,1,1,0,0,\
+              0,0,1,1,0,0],\
+      (float)[0,0,1,1,0,0,\
+              1,0,0,0,0,1,\
+              1,0,0,0,0,1,\
+              1,0,0,0,0,1]",
+      (float)[1,0,1,1,0,0,
+              1,0,0,0,0,0,
+              0,0,1,0,0,1,
+              0,0,0,0,0,1]
+     );
+}
+

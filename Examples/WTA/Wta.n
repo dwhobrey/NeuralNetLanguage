@@ -1,0 +1,133 @@
+/* NeSeL v2.0 April 1989 */
+/* WTA neural net demo */
+/* Compile with nsl1 options -aqvmh; and no options to nsltox */
+pragma header 0
+#include <math.h>
+pragma header -1
+#include "nsltype.h"
+#include "nslstd.h"
+#include "nslios.h"
+
+node /* demo io ds */
+{int fld_siz;
+ long bs_hd, /* base handle for display node state routine */
+  	d0,c0,xx;
+ int scr_t, /* wnd for time */
+	scr_d, /* wnd for input domain */
+	scr_l, /* wnd for node output levels */
+	scr_s, /* wnd for state values */
+	scr_p, /* wnd for probe */
+	trk_probe, /* track hd for probe */
+	numbar, /* number of bars of state values (with 3 rows each bar) */
+	numlin, /* number of state values per line */
+	numelm; /* number of chrs per state value */
+ int *my_tracks; /* list of wnd track handles */
+} nio_ds;
+
+node /* io used by wta */
+{ nio_ds nio; /* must be first member */
+  NSLNSLio args;
+} wta_io_ds;
+
+node
+{ float weight;
+  float *input;
+} graded_synapse;
+
+node
+{ BOOL isnew;
+  float output,oldout;
+} data_ds;
+
+node
+{ BOOL active;
+  float output;
+  graded_synapse comp[];
+  float *wta[],*AA,*BB,*TT;
+  BOOL *reset,*busy;
+} wta_ds;
+
+node
+{ int stable,settle;
+  BOOL reset,busy;
+  float AA,BB,TT;
+  BOOL *wta[],*isnew[];
+} wta_ctrl_ds;
+
+wta_io_ds wta_io_node()
+{ switch($args.cmd)
+    {case NSLIO_SETUP:
+       wta_setup($nio.fld_siz);
+       wta_update($args.args);
+       break;
+     case NSLIO_INIT: break;
+     case NSLIO_CLOSE:
+       wclose($nio.scr_d);
+       wclose($nio.scr_l);
+       wclose($nio.scr_s);
+       if($nio.my_tracks) {lfree($nio.my_tracks); $nio.my_tracks=NULL;}
+       break;
+     case NSLIO_REDRAW: wta_draw($args.args); break;
+     case NSLIO_PATTERN: wta_probe($args.args); break;
+     case NSLIO_PRE: break;
+     case NSLIO_POST: wta_update($args.args); break;
+     default:;
+    }
+  $args.cmd=NSLIO_NULL;
+}
+
+/* WTA works thus:
+*  Each node starts off with activity level determined by inner product of
+*  input & weight vector. This then decays at a fixed rate for all wta nodes.
+*  Thus the node with the largest initial stays active longest.
+*  When only one node is active the control node selects it & signals done
+*/
+wta_ctrl_ds wta_ctrl()
+  in wta,isnew; out busy,reset;
+{ if(sumc($isnew,$isnew,$size.isnew,1)!=0) $stable=$settle;
+  if($stable) {$reset=TRUE; $busy=TRUE; --$stable;}
+  else {$.reset=FALSE; if(sumc($wta,$wta,$size.wta,1)<2) $busy=FALSE;}
+}
+
+wta_ds wta_node()
+{ float state=$.output,sum,prod; int rnum=$.size.wta,cnum=$.size.comp;
+  prod=prodff($.comp,&($.comp->input),
+               $.comp,&($.comp->weight),cnum,1,0)/cnum;
+  sum=sumf($.wta,$.wta,rnum,1)/rnum; /* inhibition from off-surround */
+  if(inx(BOOL,$.reset)) state=prod;
+  else if(!inx(BOOL,$.busy)) {if(state>(float)0.0) state=(float)1.0;}
+  else state= ( inf($$AA) * state - inf($$BB) * sum ) / inf($$TT);
+  $.output=generic_bound(state,(float)1.0,(float)0.0);
+  $.active=(BOOL)($.output>(float)0.0);
+  dsp_state($node.name,$output,sum,prod);
+}
+
+data_ds data_node()
+{ $.isnew=(BOOL)($.output!=$.oldout);
+  $.oldout=$.output;
+}
+
+/* Basic Winner Take All net */
+net wta(data_size,wta_size)
+  in input; out output;
+{ data_node()[data_size];
+  wta_node()[wta_size]
+    [*]\reset=wta_ctrl\reset,
+    [*]\busy=wta_ctrl\busy,
+    [*]\wta[&!]=[*]--~~,
+    [*]\comp[&!]=data_node[*];
+  wta_ctrl() global:,
+    wta[+]=wta_node[*]\active,
+    isnew[+]=data_node[*]\isnew;
+  wta_io_node();
+} =
+{ data_node = (data_ds){FALSE,(float [])[0.4,0.7],0.0},
+  wta_node = (wta_ds){TRUE,0.5,{(float)[lnorm((float)[rndf();rndf()])]}},
+  wta_ctrl = {2,2,TRUE,TRUE,1.0,1.0,1.0},
+  wta_io_node = {{wta_size,$.$..\wta_node,$.$..\data_node,
+               0,0,0,0,0,0,0,0,0,0,0,(int *)0L}}
+}
+
+net network()
+{ wta(2,20);
+}

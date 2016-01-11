@@ -1,0 +1,18 @@
+/* NeSeL JCL file */
+/* RCN demo */
+/* usage: call hop; */
+
+void rcn_demo()
+{ int n;
+  for(n=0;n<5;++n)
+     {step(40); if(nsl_stop) break;
+      driver("pattern",0);}
+}
+
+/*
+printf("Running RCN Demo\n");
+load ryan rcn;
+ryan:;
+rcn_demo();
+*/
+printf("Try: driver(\"setup\"); rcn_demo();\n");

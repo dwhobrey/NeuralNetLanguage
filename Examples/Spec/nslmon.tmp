@@ -1,0 +1,5 @@
+printf("For demonstration try: call specxor;\n");;
+call specxor;
+view specxor.nat;
+spec_sweep();
+exit

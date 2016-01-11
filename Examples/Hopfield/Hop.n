@@ -1,0 +1,150 @@
+/* NeSeL v2.0 April 1989. Hopfield neural net */
+/* Compile with nsl1 options -aqvmh; and no options to nsltox */
+pragma header 0
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include <malloc.h>
+#include <stdarg.h>
+#include <math.h>
+
+#include "nsltype.h"
+#include "nslstd.h"
+#include "nslios.h"
+#include "nslwsio.h"
+
+pragma header -1
+
+node /* demo io ds */
+{int fld_siz;
+ long bs_hd, /* base handle for display node state routine */
+  	d0,c0,xx;
+ int scr_t, /* wnd for time */
+	scr_d, /* wnd for input domain */
+	scr_l, /* wnd for node output levels */
+	scr_s, /* wnd for state values */
+	scr_p, /* wnd for probe pattern */
+	trk_probe, /* track hd for probe */
+	numbar, /* number of bars of state values (with 3 rows each bar) */
+	numlin, /* number of state values per line */
+	numelm; /* number of chrs per state value */
+ int *my_tracks; /* list of wnd track handles */
+} nio_ds;
+
+node /* io used by hop */
+{ nio_ds nio; /* must be first member */
+  NSLNSLio args;
+} hop_io_ds;
+
+node
+{ float weight;
+  float *input;
+} graded_synapse;
+
+node
+{ BOOL *reset;
+  float *probe,output,state;
+  graded_synapse input[];
+  float *sg,*sa,*sb,*sc,*tau,*tau2;
+} hop_ds;
+
+node
+{ BOOL reset;
+  int stable;
+  float sg,sa,sb,sc,tau,tau2,output[];
+} hop_ctrl_ds;
+
+hop_io_ds hop_io_node()
+{ switch($args.cmd)
+    {case NSLIO_SETUP:
+       hop_setup(net,$nio.fld_siz);
+       hop_update(net,$args.args);
+       break;
+     case NSLIO_INIT: break;
+     case NSLIO_CLOSE:
+       w_close($nio.scr_d);
+       w_close($nio.scr_l);
+       w_close($nio.scr_s);
+       w_close($nio.scr_p);
+       if($nio.my_tracks) {lfree($nio.my_tracks); $nio.my_tracks=NULL;}
+       break;
+     case NSLIO_REDRAW: hop_draw(net,$args.args); break;
+     case NSLIO_PATTERN: hop_pattern(net,$args.args); break;
+     case NSLIO_PRE: break;
+     case NSLIO_POST: hop_update(net,$args.args); break;
+     default:;
+    }
+  $args.cmd=NSLIO_NULL;
+}
+
+hop_ctrl_ds hop_ctrl()
+  out output,reset;
+{ if($stable) {$reset=TRUE; --$stable;}
+  else $reset=FALSE;
+}
+
+/* Basic graded hop node, assumes preprogrammed weights */
+hop_ds hop_node()
+  in input,probe,reset; out output;
+{ float prod,staval;
+  if(inx(BOOL,$reset)) staval=inf($probe);
+  else
+    {staval=$state;
+     prod=liprodff($input,&($input->input),
+              $input,&($input->weight),$size.input,net,0,(float)2.0,(float)-1.0);
+     staval+=( - staval / inf($$tau)
+               + prod / inf($$tau2) );
+    }
+  staval=generic_bound(staval,(float)1.0,(float)0.0);
+  $state=staval;
+  $output=generic_sigmoid((float)staval,inf($$sa),inf($$sb),
+           inf($$sg),inf($$sc));
+  dsp_state(net,$node.name,$output,staval,prod);
+}
+
+/* Basic hop net, fully connected apart from no self connections */
+net hop(hop_size,noself,pa,pb,#pats,test_pat)
+  in input; out output;
+{ hop_node()[hop_size]
+   [*]\input[&0]=[*]--~~,
+   [*]\probe=hop_ctrl\output[&?],
+   [*]\reset=hop_ctrl\reset;
+  hop_ctrl() global:;
+  hop_io_node();
+} =
+{ hop_node = {,,0.5,0.5},
+  hop_node[*]\input[*]\weight=(float)lhopsum(s_val(c_in(1)),s_val(c_in(2)),noself,pa,pb,pats),
+  hop_ctrl = {TRUE,2,20.0,1.0,0.0,-0.5,12.0,(float)(hop_size/4),{test_pat}},
+  hop_io_node = {{hop_size,a_app(s_node(),..\hop_node),
+	a_app(s_node(),..\hop_ctrl),
+     0,0,0,0,0,0,0,0,0,0,0,(int *)0L}}
+}
+
+net network()
+{ hop(48,0,2.0,-1.0,
+     "(float)[1,0,0,0,0,1,\
+              1,0,0,0,0,1,\
+              1,0,0,0,0,1,\
+              0,1,0,0,1,0,\
+              0,1,0,0,1,0,\
+              0,1,0,0,1,0,\
+              0,0,1,1,0,0,\
+              0,0,1,1,0,0],\
+      (float)[0,0,1,1,0,0,\
+              0,1,0,0,1,0,\
+              0,1,0,0,1,0,\
+              0,1,0,0,1,0,\
+              0,1,1,1,1,0,\
+              1,0,0,0,0,1,\
+              1,0,0,0,0,1,\
+              1,0,0,0,0,1]",
+      (float)[1,0,1,1,0,0,
+              0,0,0,0,1,0,
+              0,0,0,0,1,0,
+              0,1,0,0,1,0,
+              0,1,1,1,1,1,
+              1,0,0,0,0,0,
+              0,0,1,0,0,1,
+              0,0,0,0,0,1]
+     );
+}

@@ -1,0 +1,918 @@
+/* NeSeL v2.0 April 1989 */
+/* Expression evaluator neural net */
+
+#include "exp.h"
+
+#define flushed(a) (a>0&&a<=(spamax-flushrd))
+
+symbol asc_to_sym(char chr)
+{ char *ap=exp_syms; symbol sym=1;
+  while(*ap) {++sym; if(*ap==chr) return(sym); ++ap;}
+  return(SYM_END);
+}
+
+char sym_to_asc(symbol sym)
+{ if(sym<=SYM_END||sym>SYM_9) return('\0');
+  return(exp_syms[sym-2]);
+}
+
+/* return a noisy potential to it's correct value */
+int refresh_pot(int val)
+{ if(val<1) return(val);
+  val=(val-1)/STATE_RANGE; val*=STATE_RANGE;
+  return(val+STATE_BASE);
+}
+
+/* add noise to a pulse width value */
+pulse add_noise(int val)
+{ int pp;
+  if(val<1) return((pulse)val);
+  pp=(int)(noise_level*(float)STATE_RANGE);
+  pp=(2*(refresh_pot(val)+rnd(1+pp)-1)-pp)/2;
+  if(pp<0) pp=0; if(pp>MAX_WIDTH) pp=MAX_WIDTH;
+  return((pulse)pp);
+}
+
+/* convert a symbol to random pulse bytes, result in bp buff
+*  1st int= msb, 2nd next, etc.
+*/
+void sym_to_pulse(pulse_out_synapse *bp, symbol val, BOOL is_pos)
+{ int ff; int kk=NUM_SYM_LINES; pulse *pp;
+  if(is_pos) bp+=kk; else {pp=(pulse *)bp; pp+=kk;}
+  while(kk--)
+    {ff=(int)(val%NUM_LINE_STATES);
+     ff=ff*STATE_RANGE+STATE_TINY;
+     if(is_pos) {--bp; bp->potential=(int)ff;}
+     else {--pp; *pp=(pulse)ff;}
+     val/=NUM_LINE_STATES;
+    }
+}
+
+/* convert random pulse bytes to symbol */
+symbol pulse_to_sym(pulse *bp)
+{ pulse val; symbol sym=0; int kk=NUM_SYM_LINES;
+  while(kk--)
+    {val=(*bp); ++bp; sym*=NUM_LINE_STATES;
+     if(val>=STATE_LOWB) {val-=1; val/=STATE_RANGE; sym+=val;}
+    }
+  return(sym);
+}
+
+/* Status Display */
+#define NOO_OFS 5 /* wnd y offset for reco & or dsp */
+#define NOO_WID 11 /* width of dsp column */
+#define ND_MAX 200
+#define NT_OR 1
+#define NT_RECO 2
+#define NT_LATCH 3
+long nd_list[ND_MAX];
+
+/* Add node numbers to status list: driver("user",a,b) */
+void dsp_user(va_list args)
+{ long a,b,num; int xx; BOOL isdel=FALSE,isok;
+  a=(long)va_arg(args,int); b=(long)va_arg(args,int);
+  if(b==0) b=a; if(b<a) {num=b; b=a; a=num;}
+  if(a<0||b<0)
+    {isdel=TRUE; if(a<0) a=(-a); if(b<0) b=(-b);}
+  while(a<=b)
+    {isok=isdel;
+     for(xx=0;xx<num_nd;++xx)
+       {if(nd_list[xx]==a)
+          {if(isdel) nd_list[xx]=0; else isok=TRUE;}
+       }
+     if(!isok&&num_nd<ND_MAX) nd_list[num_nd++]=a;
+     ++a;
+    }
+}
+
+void dsp_node(void *np, int ntyp)
+{ int val,ax,by=NOO_OFS,yd,xx,nn; long num; reco_ds *rp=(reco_ds *)np;
+  or_ds *op=(or_ds *)np; latch_ds *lp=(latch_ds *)np;
+  if(!dsp_flag) return;
+  switch(ntyp)
+    {case NT_OR: nn=op->size.input; num=op->node.name; break;
+     case NT_RECO: nn=rp->size.input; num=rp->node.name; break;
+     default: nn=lp->size.input; num=lp->node.name;
+    }
+  for(xx=0;xx<num_nd;++xx) {if(nd_list[xx]==num) break;}
+  if(xx==num_nd) return;
+  yd=1+w_y(w_size(ewnd,TRUE))-NOO_OFS; ax=1+((xx/yd)*NOO_WID); by+=xx%yd;
+  if((ax+NOO_WID)>w_x(w_size(ewnd,TRUE))) return;
+  w_moveto(ewnd,ax,by); w_printf(-ewnd,"%ld",num);
+  switch(ntyp)
+    {case NT_OR: for(xx=0;xx<nn;++xx)
+      w_printf(-ewnd,"%c",'A'+op->input[xx].potential);
+      val=op->output.output; break;
+     case NT_RECO: for(xx=0;xx<nn;++xx)
+      w_printf(-ewnd,"%c",'A'+rp->input[xx].potential);
+      val=rp->output.output; break;
+     default:
+       w_printf(-ewnd,"%c",'A'+lp->input.potential);
+       val=lp->output.output;
+    }
+  w_printf(ewnd,"%c ",'A'+val);
+}
+
+void dsp_value(NSLNSLnet *net,long nd, pulse_out_synapse *op)
+{ nio_ds *np=(&nsl_drv(expio_ds)->nio); pulse buff[NUM_SYM_LINES];
+  int col,row; symbol sym; char chr;
+  if(nd>=np->opr) {col=(int)(nd-np->opr); row=4;}
+  else if(nd>=np->val) {col=(int)(nd-np->val); row=3;}
+  else {col=(int)(nd-np->sym); row=2;}
+  for(sym=0;sym<NUM_SYM_LINES;++sym) {buff[sym]=(pulse)op->potential; ++op;}
+  sym=pulse_to_sym(buff); chr=sym_to_asc(sym); col+=5;
+  if(!chr) chr='o';
+  w_moveto(ewnd,col,row); w_printf(ewnd,"%c",chr);
+}
+
+/* Comms Routines */
+#define EMPTY ((pulse)127)
+#define MY_PIE ((double)3.141592654)
+#define TABLE_X 32
+#define TABLE_Y 110
+#define DIST_X 32
+#define DIST_Y 100
+#define DIST_H (DIST_Y/2)
+#define DIST_M (DIST_H-1)
+#define DIST_D (DIST_Y-1)
+
+int dist_table[DIST_X][DIST_Y+1] = {0};
+
+double gauss(double xx,double kk,double mm,double cc)
+{ xx-=mm; xx*=xx; xx/=kk;
+  return(exp(-xx)/cc);
+}
+
+/* work out quick look up table for path length normal distribution */
+void calc_dist(int len,int max)
+{ double cc,mm,kk,ss,x1,x2,xx,dd,sum=(double)0.0,aa;
+  int ff,bb,nn,no,iy,ix=1;
+  dist_table[len][0]=(int)max;
+  x1=(double)len; x2=(double)max; nn=(int)x1;
+  x1-=(double)0.5; x2+=(double)0.5;
+  mm=(x1+x2)/(double)2.0;
+  dd=(double)0.02; ff=50;
+  if(len<1) goto skip;
+  ss=(double)len/sigma_coeff;  /* approximation for sigma */
+  kk=(double)2.0*ss*ss;
+  cc=ss*(double)sqrt((double)2.0*MY_PIE);
+  for(xx=x1;xx<x2;xx+=dd) sum+=gauss(xx,kk,mm,cc);
+  xx=x1;
+  while(ix<DIST_H)
+    {iy=ff; aa=(double)0.0;
+     while(iy--) {aa+=gauss(xx,kk,mm,cc); xx+=dd;}
+     iy=(int)(aa*(double)DIST_D/sum);
+     if(iy<1) iy=1;
+     if(xx+dd>mm) iy=DIST_H;
+     while(iy--&&ix<DIST_H) dist_table[len][ix++]=(int)nn;
+     ++nn;
+    } skip:
+  nn=(int)dist_table[len][DIST_M]; dist_table[len][DIST_H]=(int)nn;
+  ix=DIST_H; iy=DIST_H+1; no=nn; bb=nn;
+  if(bb<max) {if(len%2) ++bb; else if(max%2) ++bb;}
+  while(iy<DIST_Y)
+    {nn=(int)dist_table[len][ix];
+     if(nn!=no) {if(bb<max) bb++; no=nn;}
+     dist_table[len][iy]=(int)bb;
+     ++iy; --ix;
+    }
+  for(iy=1;iy<DIST_Y;++iy) {if(dist_table[len][iy]) --dist_table[len][iy];}
+}
+
+/* allocate mem for comm channel: pick random vals for path len.
+  sigma=SL/coeff, S=packet size=1, L=min path len, M=max len.
+  range=6sigma: L..M, [L>=com_min,M<=com_max]. Formula: M=L+6*L/coeff.
+*/
+void com_mem(pulse_in_synapse *dp)
+{ pulse *apt; int L,M;
+  double vary=(double)1.0+(double)6.0/sigma_coeff;
+  /* work out max L for current sigma_coeff */
+  L=(int)((double)com_max/vary); if(L<1) L=1;
+  /* work out new path min */
+  L=1+L-com_min; L=com_min+(int)rnd(L)-1;
+  /* now get the new path max for this min len */
+  M=(int)(L*vary); /* L + 6 sigma */
+  dp->len=(int)L; dp->max=(int)M;
+  if(!dist_table[L][0]) calc_dist(L,M);
+  ++M; /* plus one for terminal EMPTY slot */
+  if(!(apt=(pulse *)malloc(sizeof(pulse)*M)))
+    {w_exit(0);}
+  dp->delay=apt;
+  while(M--) (*apt++)=EMPTY;
+}
+
+/* Get input pulse. This models comms delay.
+*  Propagate signal down connection channel
+*  All inputs are strobed every cycle.
+*/
+pulse get_pulse(NSLNSLnet *net,pulse_in_synapse *dp)
+{ pulse *fp,val=inx(pulse,dp->input); int nn;
+  if(com_off||com_max<2||dp->islocal) dp->tap=val;
+  else
+    {if(!dp->len) com_mem(dp);
+     nn=dp->max; fp=dp->delay;
+     while(nn--) {*fp=(*(fp+1)); ++fp;} /* last slot always empty */
+     nn=(int)dist_table[dp->len][1+(int)(rndf()*(float)DIST_D)];
+     fp=dp->delay+nn;
+     while(*fp!=EMPTY) ++fp; /* find a free slot */
+     *fp=val;
+     if(*(fp=dp->delay)==EMPTY) dp->tap=STATE_IDLE; else dp->tap=(*fp);
+    }
+  return(dp->tap);
+}
+
+/*********************************************/
+
+/* Models an action-potential output type of process
+*  with refractory & hold periods,
+*  if isrest, zero potential after use
+*  returns TRUE if fires, FALSE otherwise
+*/
+BOOL action_out(pulse_out_synapse *op,BOOL isrest)
+{ if(op->refract) --op->refract;
+  if(op->hold) --op->hold;
+  if(op->potential!=STATE_IDLE&&!op->hold) op->hold=outholmax;
+  if(op->refract||op->potential==STATE_IDLE)
+    {op->output=add_noise(STATE_IDLE);
+     if(isrest) op->potential=STATE_IDLE;
+     return(FALSE);
+    }
+  op->refract=outrefmax;
+  op->output=add_noise(op->potential);
+  if(isrest&&op->hold<2) op->potential=STATE_IDLE;
+  return(TRUE);
+}
+
+/* Models an action-potential input type of process,
+*  returns (1+pot) if a valid input is pending (being held),
+*  returns (1) if subliminal input, else zero for no input */
+int action_in(pulse_in_synapse *ip, dendrite *dp)
+{ int pot=0;
+  if(ip->hold) --ip->hold;
+  pot=ip->potential;
+  if(pot>=dp->threshold&&pot<=dp->threshold+dp->range)
+    {if(!dp->isinverse) goto set_hold;}
+  else if(dp->isinverse&&pot>=STATE_TINYB)
+    {pot=dp->threshold+dp->range/2; goto set_hold;}
+  if(!ip->hold&&pot>=STATE_TINYB) /*an input, but not above threshold*/
+    {pot=0;
+     set_hold: ++pot; ip->pothold=pot;
+     if(dp->isinhibit) ip->hold=inhmax; else ip->hold=holmax;
+    }
+  if(ip->hold) return((int)ip->pothold);
+  return(0);
+}
+void inh_inp(dendrite *dp)
+{ int xx;
+  if(!dp->isinhibit)
+    {dp->spark=0; dp->potential=STATE_IDLE;
+     for(xx=0;xx<dp->size.input;++xx)
+        {dp->input[xx].hold=0; dp->input[xx].pothold=STATE_IDLE;}
+    }
+}
+
+/* Combine anti-noise lines,
+*  returns (1+avr input pot) if coherent supraliminal input present,
+*  (1) if coherent subliminal input present,
+*  (-1) if inhibitory input, else (0) if no coherent input.
+*  During refract period it ignores any inputs.
+*  A valid coherent input is held for `spamax' cycles unless another valid
+*  input is received after refract period.
+*/
+int cohort(NSLNSLnet *net,dendrite *dp)
+{ pulse_in_synapse *ip=dp->input;
+  int sum[NUM_LINE_STATES]; int mask[MAX_NNS];
+  int xx,val,indx,num_sub=0,size=dp->size.input;
+  for(xx=0;xx<MAX_NNS;++xx) mask[xx]=255;
+  for(xx=0;xx<NUM_LINE_STATES;++xx) sum[xx]=0;
+  for(xx=0;xx<size;++xx) ip[xx].potential=get_pulse(net,ip+xx);
+  if(dp->spark) --dp->spark;
+  if(dp->refract) --dp->refract;
+  if(dp->refract) return(-1);
+  if(!size) {dp->potential=0; return(0);} /* no inputs!*/
+  for(xx=0;xx<size;++xx)
+    {val=action_in(ip+xx,dp);
+     if(val==1) ++num_sub;
+     else if(val>1)
+       {indx=(val-2)/STATE_RANGE; mask[xx]=(int)indx; ++sum[indx];}
+    }
+  xx=NUM_LINE_STATES; val=0; indx=0;
+  while(xx--) {if(sum[xx]>val) {indx=xx; val=sum[xx];}}
+  if((((float)val/(float)size)>=num_ok))
+    {val=(int)3+indx*STATE_RANGE;
+     dp->spark=spamax;
+     if(dp->isinhibit||(dp->isrefract&&(val>STATE_HIB)))
+       {if(dp->isinhibit) val=(-1); dp->refract=rohmax;}
+     else dp->refract=refmax;
+     for(xx=0;xx<size;++xx) {if(mask[xx]==(int)indx) ip[xx].hold=0;}
+    }
+  else
+    {if((((float)num_sub/(float)size)>=num_ok)) val=1; else val=0;
+     if(dp->spark) val=dp->potential;
+    }
+  dp->potential=val;
+  return(val);
+}
+
+void bus_copy(pulse *a,pulse *b)
+{ int xx=NUM_SYM_LINES;
+  while(xx--) *a++ = *b++;
+}
+
+void bus_out(pulse_out_synapse *op)
+{ int xx;
+  if(!op->potential)
+    for(xx=0;xx<NUM_SYM_LINES;++xx) {op[xx].potential=p_end_sym[xx];}
+  for(xx=0;xx<NUM_SYM_LINES;++xx) action_out(op+xx,FALSE);
+}
+
+/* Read bus value, returns STATE_IDLE if bus contained an idle */
+pulse bus_get(NSLNSLnet *net,pulse *bp,dendrite *dp, BOOL is_inp,BOOL is_pos)
+{ pulse_out_synapse *op; dendrite *tmpdp=dp;
+  pulse *tp,*pp=(pulse *)dp,buff[NUM_SYM_LINES];
+  int xx=NUM_SYM_LINES,val; BOOL was_idle=FALSE;
+  tp=buff;
+  while(xx--)
+    {if(is_inp)
+       {val=cohort(net,dp++);
+        was_idle|=(BOOL)(val<DEND_COHORT); --val;}
+     else {val=(*pp++); was_idle|=(BOOL)(val==STATE_IDLE);}
+     if(val<0) val=STATE_IDLE;
+     *tp=(pulse)val; ++tp;
+    }
+  if(was_idle) return(STATE_IDLE);
+  if(is_inp) for(xx=0;xx<NUM_SYM_LINES;++xx) tmpdp[xx].spark=0;
+  sym_to_pulse((pulse_out_synapse *)buff,pulse_to_sym(buff),FALSE); /* filter noise from value */
+  if(is_pos)
+    {op=(pulse_out_synapse *)bp; tp=buff; xx=NUM_SYM_LINES;
+     while(xx--) {op->potential=(int)(*tp); ++op; ++tp;}
+    }
+  else bus_copy(bp,buff);
+  return(STATE_HI);
+}
+
+/* Node Functions */
+
+delay_ds delay(delay)
+  in input; out output;
+{ int xx;
+  if($delay>1)
+    {if(!$queue)
+       {$queue=(pulse *)malloc(sizeof(pulse)*$delay);
+       if(!$queue) {w_exit(0);}
+        for(xx=0;xx<$delay;++xx) $queue[xx]=$output;}
+     for(xx=1;xx<$delay;++xx) $queue[xx-1]=$queue[xx];
+     $queue[$delay-1]=get_pulse(net,&$input);
+     $output=$queue[0];
+    }
+  else return(get_pulse(net,&$input));
+}
+
+latch_ds pulse_latch() in clear,input; out output;
+{ cohort(net,&$clear); cohort(net,&$input);
+  if(flushed($clear.spark))
+    {$clear.spark=0; $output.potential=STATE_TINY;}
+  if(flushed($input.spark))
+    {$input.spark=0; $output.potential=STATE_HI;}
+  action_out(&$output,FALSE);
+  dsp_node($,NT_LATCH);
+}
+
+lat_num_ds latch_num() in trigger,input; out done,output;
+{ cohort(net,&$trigger);
+  if($trigger.spark)
+    {$trigger.spark=0;
+     $output=ini($input); $done.potential=STATE_HI;}
+  action_out(&$done,TRUE);
+}
+
+expio_ds exp_io()
+{ switch($args.cmd)
+    {case NSLIO_PRE:
+       w_moveto(ewnd,1,2); w_printf(ewnd,"sym:\nval:\nopr:");
+       w_moveto(ewnd,56,2); w_printf(ewnd,"time:%ld ",net->time);
+       break;
+     case NSLIO_USER:
+        dsp_user($args.args);
+     default:;
+    }
+  $args.cmd=NSLIO_NULL;
+}
+
+sep_ds sep_const() out output;
+{ bus_out($output);
+}
+
+/* or signals i.e. select max */
+or_ds or_atom(saturate)
+  in input; out output;
+{ int val,xx,p_max=STATE_TINYB; BOOL has_inhibit=FALSE;
+  for(xx=0;xx<$size.input;++xx)
+    {val=cohort(net,&$input[xx]);
+     $input[xx].spark=0;
+     has_inhibit|=(BOOL)(val<0); --val;
+     if(val>p_max) p_max=val;
+    }
+  if($saturate&&p_max>=STATE_LOWB) p_max=STATE_HI;
+  if(has_inhibit)
+    {p_max=STATE_TINY;
+     for(xx=0;xx<$size.input;++xx) inh_inp(&$input[xx]);
+    }
+  $output.potential=p_max;
+  action_out(&$output,TRUE);
+  dsp_node($,NT_OR);
+}
+
+/* A recognition node.
+*  It responds more vigorously as the pattern match error decreases.
+*  Match output coded as a pulse 1 to MAX_WIDTH.
+*  Returns STATE_IDLE if all inputs are idle,
+*  or STATE_TINYB if active but inhibited.
+*/
+reco_ds reco_atom()
+  in input; out output;
+{ int val,xx,kk,num_supra=0,nn=$size.input;
+  BOOL has_inhibit=FALSE,was_active=FALSE;
+  kk=nn;
+  for(xx=0;xx<nn;++xx)
+     {val=cohort(net,&$input[xx]);
+      if($input[xx].isinhibit) --kk;
+      if(val<0) has_inhibit=TRUE;
+      else if(val>0) {was_active=TRUE; if(val>1) ++num_supra;}
+     }
+  if(!num_supra||!kk||has_inhibit)
+    {if(was_active||has_inhibit)
+       {$output.potential=STATE_TINYB;
+        if(has_inhibit) {for(xx=0;xx<nn;++xx) inh_inp(&$input[xx]);}
+        else goto zap_sparks;
+       }
+     else $output.potential=STATE_IDLE;
+    }
+  else
+    {$output.potential=
+     (int)1+(int)((float)(MAX_WIDTH-1)*(float)num_supra/(float)kk);
+     zap_sparks: for(xx=0;xx<nn;++xx) $input[xx].spark=0;
+    }
+  action_out(&$output,TRUE);
+  dsp_node($,NT_RECO);
+}
+
+setup_ds setup()
+  in clear,trigger; out done,output,strobe;
+{ char chr;
+  cohort(net,&$trigger); cohort(net,&$clear);
+  if($clear.spark)
+    {*$stk='\0'; $last=FALSE; w_moveto(ewnd,1,1);
+     w_printf(ewnd,"Enter expression>     \b\b\b\b\b"); w_gets(ewnd,$stk);
+     $s=$stk+strlen($stk)-1; *$s='\0';
+    }
+  if($trigger.spark||$clear.spark)
+    {$trigger.spark=0; $clear.spark=0;
+     if($last) $done.potential=STATE_HI;
+     else
+       {if($s) chr=(*$s); else chr='\0';
+		sym_to_pulse($output,asc_to_sym(chr),TRUE);
+        $strobe.potential=STATE_HI;
+        if($s==$stk) $last=TRUE; else if($s) --$s;
+       }
+    }
+  action_out(&$strobe,TRUE); action_out(&$done,TRUE);
+  bus_out($output);
+}
+
+result_ds result()
+  in clear,input,trigger; out done,strobe;
+{ char chr; pulse buff[NUM_SYM_LINES];
+  if($bufimer) --$bufimer;
+  cohort(net,&$trigger); cohort(net,&$clear);
+  if(bus_get(net,buff,$input,TRUE,FALSE)!=STATE_IDLE) $bufimer=bufmax;
+  if($clear.spark) {$s=$stk; *$s='\0'; $last=FALSE;}
+  if($bufimer&&(flushed($trigger.spark)||flushed($clear.spark))&&!$last)
+    {$trigger.spark=0; $clear.spark=0; $bufimer=0;
+     chr=sym_to_asc(pulse_to_sym(buff)); if($s) *$s=chr;
+     if(chr) {if($s) ++$s; $strobe.potential=STATE_HI;}
+     else
+       {w_moveto(ewnd,50,1); w_printf(ewnd,"Result:     \b\b\b\b\b");
+        while($s && ($s!=$stk)) {--$s; if(!*$s) break; w_printf(ewnd,"%c",*$s);}
+        w_printf(ewnd,"  \n");
+        $done.potential=STATE_HI; $last=TRUE;
+       }
+     if($s) *$s='\0';
+    }
+  action_out(&$strobe,TRUE); action_out(&$done,TRUE);
+}
+
+comp_num_ds comp_num()
+  in clear,input,trigger; out number,done;
+{ symbol sym; pulse buff[NUM_SYM_LINES];
+  if($bufimer) --$bufimer;
+  cohort(net,&$trigger); cohort(net,&$clear);
+  if(bus_get(net,buff,$input,TRUE,FALSE)!=STATE_IDLE) $bufimer=bufmax;
+  if($clear.spark) {$clear.spark=0; $number=0; $units=1;}
+  if($bufimer&&flushed($trigger.spark))
+    {$trigger.spark=0; $bufimer=0;
+     sym=pulse_to_sym(buff);
+     $number+=(sym-SYM_0)*$units; $units*=10;
+     $done.potential=STATE_HI;
+    }
+  action_out(&$done,TRUE);
+}
+
+comp_str_ds comp_str()
+  in clear,number,trigger; out output,done,strobe;
+{ int val; int xx; symbol sym;
+  cohort(net,&$trigger); cohort(net,&$clear);
+  if($clear.spark)
+    {$clear.spark=0;
+     val=ini($number); if(val<0) {xx=1; val=(-val);} else xx=0;
+     $s=$stk; *$s=SYM_END;
+     do{++$s; *$s=(symbol)(SYM_0+(val%10)); val/=10;} while(val);
+     if(xx) {++$s; *$s=SYM_SUB;}
+    }
+  if($trigger.spark)
+    {$trigger.spark=0; if($s) sym=(*$s); else sym=SYM_END;
+     sym_to_pulse($output,sym,TRUE); if($s && (*$s!=SYM_END)) --$s;
+     $pause=1;
+    }
+  if(!$s || (*$s==SYM_END)) $strobe.potential=STATE_TINY;
+  else $strobe.potential=STATE_HI;
+  if($pause) ++$pause;
+  if($pause>flushwt) {$done.potential=STATE_HI; $pause=0;}
+  action_out(&$strobe,TRUE); action_out(&$done,TRUE);
+  bus_out($output);
+}
+
+operate_ds operate(opr)
+  in num_one,num_two,input; out done,number;
+{ int xx;
+  for(xx=0;xx<$size.input;++xx)
+     {if(cohort(net,&$input[xx])>=DEND_COHORT)
+        {$input[xx].spark=0;
+         switch(xx)
+          {case 0: $number=ini($num_one)*ini($num_two); break;
+           case 1: $number=ini($num_one)/ini($num_two); break;
+           case 2: $number=ini($num_one)-ini($num_two); break;
+           default: $number=ini($num_one)+ini($num_two);
+          }
+         $done.potential=STATE_HI; break;
+        }
+     }
+  action_out(&$done,TRUE);
+}
+
+stack_ds stack_cell()
+  in head,tail,push,pop; out output,pushout,popout,done;
+{ BOOL fired;
+  if($bufimer1) --$bufimer1; if($bufimer2) --$bufimer2;
+  cohort(net,&$push); cohort(net,&$pop);
+  if(bus_get(net,$latch1,$head,TRUE,FALSE)!=STATE_IDLE) $bufimer1=bufmax;
+  if($bufimer1&&flushed($push.spark))
+    {$push.spark=0; $pushout.potential=STATE_HI; $bufimer1=0;
+     bus_copy($latch,$latch1);
+    }
+  if(bus_get(net,$latch2,$tail,TRUE,FALSE)!=STATE_IDLE) $bufimer2=bufmax;
+  if($bufimer2&&flushed($pop.spark))
+    {$pop.spark=0; $popout.potential=STATE_HI; $bufimer2=0;
+     bus_copy($latch,$latch2);}
+  /* for each p/p only latch once at end of operation */
+  fired=action_out(&$pushout,TRUE); fired|=action_out(&$popout,TRUE);
+  if(fired&&!$pause) $pause=1;
+  if($pause) ++$pause;
+  if($pause>2*flushwt) /* allow head or tail time to update first */
+    {$done.potential=STATE_HI; $pause=0;
+     bus_get(net,(pulse *)$output,(dendrite *)$latch,FALSE,TRUE);
+    }
+  action_out(&$done,TRUE); bus_out($output);
+  dsp_value(net,$node.name,$output);
+}
+
+/* This models a `tri-state' guarded stack top
+*  All `gates' are scanned and the last enabled one wins */
+stack_top_ds stack_top()
+  in input,enable,push,pop; out output,pushout,popout;
+{ int xx;
+  cohort(net,&$push); cohort(net,&$pop);
+  for(xx=0;xx<$size.input;++xx)
+    {if($input[xx].bufimer) --$input[xx].bufimer;
+     cohort(net,&$enable[xx]);
+     if(bus_get(net,$input[xx].latch,$input[xx].input,TRUE,FALSE)!=STATE_IDLE)
+       $input[xx].bufimer=bufmax;
+     if($input[xx].bufimer&&flushed($enable[xx].spark))
+       {$enable[xx].spark=0; $input[xx].bufimer=0; $pending=TRUE;
+        bus_get(net,(pulse *)$output,(dendrite *)$input[xx].latch,FALSE,TRUE);
+       }
+    }
+  if($pending)
+    {if($push.spark)
+       {$pending=FALSE; $push.spark=0; $pushout.potential=STATE_HI;}
+    }
+  if($pop.spark)
+    {$pop.spark=0; $popout.potential=STATE_HI;}
+  action_out(&$pushout,TRUE); action_out(&$popout,TRUE);
+  bus_out($output);
+  dsp_value(net,$node.name,$output);
+}
+
+stack_null_ds stack_null() out output;
+{ bus_out($output);
+}
+
+/* Nets */
+
+/* Note 'n' must be multiplied by DLY_CYCLES*DLY_COMM */
+net delay_band(n) in input; out output;
+{ delay(n*DLY_CYCLES*DLY_COMM)[NN_LINES]
+   input[*]: [*], output[*]: [*];
+}
+
+net or(cross,pull_up)
+  in input; out output;
+{ or_atom(pull_up)[NUM_OR_STAGE] reco:,
+   input: [&]/input[+]|input[rin];
+  or_atom(pull_up)[NUM_COMP_STAGE] comp:,
+    [&]\input[+]|input[+]=reco[noisyor]|output{local}
+$if((cross!=0)&&(NUM_COMP_STAGE>1))
+      |+comp[lminus([&?],[$#?])]|output{local,inhibit}
+$endif
+      ;
+  or_atom(pull_up)[NN_LINES] output:,
+    [&]\input[@]\input[+]=comp[&]|output;
+} = {
+$if(cross)
+  output[*]/input[*].isrefract=TRUE;
+$endif
+}
+
+net recognizer(cross)
+  in input; out output;
+{ reco_atom()[NUM_RECO_STAGE] reco:,
+    input: [&]/input[+]|input[rin];
+  or_atom(FALSE)[NUM_COMP_STAGE] comp:,
+    [*]\input[+]|input[+]=reco[noisyre]|output{local}
+$if((cross!=0)&&(NUM_COMP_STAGE>1))
+      |+comp[lminus([&?],[$#?])]|output{local,inhibit}
+$endif
+      ;
+  or_atom(FALSE)[NN_LINES] output:,
+    [&]\input[@]\input[+]=comp[&]|output;
+} = {
+$if(cross)
+  output[*]/input[*].isrefract=TRUE;
+$endif
+}
+
+/* The stack is implemented in the same fashion as a bidirectional logic
+*  shift-register.
+*/
+net stack(stk_max)
+ in input,push,pop,enable; out output,linout,done;
+{ or(TRUE) push:, push_or: [0]|output[&];
+  or(TRUE) pop:, pop_or: [0]|output[&];
+  stack_top() input: input[@]/input[+]|input[rin],
+    enable: enable[@]|input[rin],
+    st_pop: popout|output[rout],
+    st_push: pushout|output[rout],
+    push=push_or, pop=pop_or;
+  stack_cell()[stk_max]
+   linout[*]: [0]/output[0..(NUM_SYM_LINES-1)]|output[rout],
+   output: [0]/output[&]|output[rout], done: [0]/done|output[rout],
+   [0]/pop=st_pop, [0]/push=st_push,
+   [0]/head[&]|input[rin]=stack_top/output[&]|output[rout],
+   [1..(stk_max-1)]/pop|input[rin]=[0..(stk_max-2)]/popout|output[rout],
+   [1..(stk_max-1)]/push|input[rin]=[0..(stk_max-2)]/pushout|output[rout],
+   [1..(stk_max-1)]/head[&]|input[rin]=[0..(stk_max-2)]/output[&]|output[rout],
+   [0..(stk_max-2)]/tail[&]|input[rin]=[1..(stk_max-1)]/output[&]|output[rout],
+   [stk_max-1]/tail[&]|input[rin]=\stack_null/output[&]|output[rout];
+}
+
+net pop_stk(sid)
+  in pop; out done;
+{ pulse_latch() pop: input|input[rin],
+    clear|input[rin]=\sid##_stk\done;
+  recognizer(TRUE) done: [0]|output[&],
+    input=pulse_latch|output[rout]|+\sid##_stk\done;
+  pop: \sid##_stk\pop;
+}
+
+net push_stk(sid)
+  in push,input; out done;
+{ pulse_latch() push: input|input[rin],
+    clear|input[rin]=\sid##_stk\done;
+  recognizer(TRUE) done: [0]|output[&],
+    input=pulse_latch|output[rout]|+\sid##_stk\done;
+  delay_band(1) push: input[&],
+    \sid##_stk\enable=[0]|output[&];
+  push: \sid##_stk\push;
+  input: \sid##_stk\input;
+}
+
+net get_num()
+ in trigger; out number,done;
+{ recognizer(TRUE) trigger: input, check_val: [0]|output[&],
+    input=\val_is_sep;
+  recognizer(TRUE) trigger: input, in_pulse: [0]|output[&],
+    input=\val_is_sep{inverse};
+  pop_stk(val) setup_pop: done, pop=check_val;
+  or(TRUE) active: [0]|output[&],
+    input=in_pulse|+setup_pop;
+  or(TRUE) while_loop: [0]|output[&],
+    input=active|+pop_done;
+  delay_band(2) delay_one: [0]|output[&], input=while_loop;
+  recognizer(FALSE) loop_cond: [0]|output[&],
+    input=\val_is_sep{inverse}|+\val_is_end{inverse};
+  recognizer(TRUE) while_cond: [0]|output[&],
+    input=delay_one|+loop_cond;
+  pop_stk(val) pop_done: done, pop=comp_num/done|output[rout];
+  comp_num() number: number, trigger: clear|input[rin],
+    trigger|input[rin]=while_cond,
+    input[+]|input[rin]=\val_stk;
+  recognizer(TRUE) done: [0]|output[&],
+    input=delay_one|+loop_cond{inverse};
+}
+
+net put_num()
+  in trigger,number; out done;
+{ delay_band(1) delay_one: [0]|output[&], trigger[*]: input[*];
+  or(TRUE) active: [0]|output[&],
+    input=delay_one|+push_done;
+  recognizer(TRUE) while_cond: [0]|output[&],
+    input=active|+digit;
+  comp_str() trigger: clear, number: number,
+    digit: strobe|output[rout],
+    trigger=while_cond;
+  push_stk(val) push_done: done,
+    push=comp_str/done|output[rout],
+    input=comp_str/output[&]|output[rout];
+  recognizer(TRUE) done: [0]|output[&],
+    input=active|+digit{inverse};
+}
+
+net do_reduce()
+  in trigger; out done;
+{ or(TRUE) or_one: [0]|output[&], trigger: input;
+  get_num() get_one:, trigger=or_one;
+  latch_num() second:, input=get_one/number, trigger=get_one/done;
+  get_num() get_two:, trigger=second|done/output[rout];
+  latch_num() first:, input=get_two/number, trigger=get_two/done;
+  recognizer(TRUE)[4]
+    [&]/input=first|done/output[rout],
+    [0]/input=\opr_stk{../threshold=(int [])[dup(MUL_SYM)]},
+    [1]/input=\opr_stk{../threshold=(int [])[dup(DIV_SYM)]},
+    [2]/input=\opr_stk{../threshold=(int [])[dup(SUB_SYM)]},
+    [3]/input=\opr_stk{../threshold=(int [])[dup(ADD_SYM)]};
+  operate() input[0..3]|input[rin]=recognizer[&],
+    num_one=first, num_two=second;
+  pop_stk(opr) pop_done: done, pop=operate/done|output[rout];
+  put_num() done: done, number=operate/number, trigger=pop_done;
+}
+
+net reduce() in trigger; out done;
+{ pulse_latch() clear|input[rin]=\do_reduce/done;
+  recognizer(TRUE) done: [0]|output[&],
+    input=pulse_latch|output[rout]|+\do_reduce/done;
+  trigger: \do_reduce/trigger;
+  trigger: pulse_latch/input|input[rin];
+}
+
+net do_left() in trigger; out done;
+{ push_stk(opr) trigger: push, done: done,
+    input=\sym_stk;
+}
+
+macro while_opr(done_label)
+{ or(TRUE) while_loop: [0]|output[&],
+    trigger: input, input=reduce/done;
+  delay_band(2) delay_one: [0]|output[&], input=while_loop;
+  recognizer(FALSE) loop_cond: [0]|output[&],
+    input=\opr_is_end{inverse}|+\opr_is_left{inverse};
+  recognizer(TRUE) while_cond: [0]|output[&],
+    input=delay_one|+loop_cond;
+  reduce() trigger=while_cond;
+  recognizer(TRUE) done_label##: [0]|output[&],
+    input=delay_one|+loop_cond{inverse};
+}
+
+net do_right() in trigger; out done;
+{ while_opr(while_done);
+  pop_stk(opr) done: done, pop=while_done;
+}
+
+net do_seppop() in trigger; out done;
+{ or(TRUE) or_trig: [0]|output[&],
+    trigger: input;
+  recognizer(TRUE) check_val: [0]|output[&],
+    input=or_trig|+\val_is_sep{inverse};
+  recognizer(TRUE) is_sep: [0]|output[&],
+    input=or_trig|+\val_is_sep;
+  push_stk(val)
+    push_done: done, push=check_val,
+    input=\sep_const/output[&]|output[rout];
+  or(TRUE) or_done: [0]|output[&],
+    input=is_sep|+push_done;
+  push_stk(opr)
+    done: done, push=or_done,
+    input=\sym_stk;
+}
+
+net do_add_sub() in trigger; out done;
+{ while_opr(done);
+}
+
+net do_mul_div() in trigger; out done;
+{ delay_band(2) in_dly: [0]|output[&], trigger: input[&];
+  or(FALSE) is_mod: [0]|output[&], input=\opr_is_mul|+\opr_is_div;
+  recognizer(TRUE) is_ok: [0]|output[&], input=in_dly|+is_mod;
+  reduce() trigger=is_ok;
+  recognizer(TRUE) not_red: [0]|output[&],
+    input=in_dly|+is_mod{inverse};
+  or(TRUE) done: [0]|output[&], input=reduce/done|+not_red;
+}
+
+net do_end() in trigger; out done;
+{ while_opr(done);
+}
+
+net do_default() in trigger; out done;
+{ push_stk(val) trigger: push, done: done,
+    input=\sym_stk;
+}
+
+net do_symbol()
+  in trigger; out done;
+{  recognizer(TRUE)[7] recos[*]: [*]|output[&], trigger: [0..6]\input,
+     [0]\input=\sym_stk{../threshold=(int [])[dup(LEFT_SYM)]},
+     [1]\input=\sym_stk{../threshold=(int [])[dup(RIGHT_SYM)]},
+     [2]\input=\sym_stk{../threshold=(int [])[dup(ADD_SYM)]},
+     [3]\input=\sym_stk{../threshold=(int [])[dup(SUB_SYM)]},
+     [4]\input=\sym_stk{../threshold=(int [])[dup(MUL_SYM)]},
+     [5]\input=\sym_stk{../threshold=(int [])[dup(DIV_SYM)]},
+     [6]\input=\sym_stk{../threshold=(int [])[dup(END_SYM)]};
+   delay_band(1) trigger: input[&];
+   or(FALSE,TRUE) or_other: [0]|output[&],
+     input=\sym_stk\linout[1]
+            {../threshold=STATE_MEDB,../range=(STATE_MAX-STATE_MEDB)}
+           |+\sym_stk\linout[0] /* high bit of bus */
+            {../threshold=STATE_LOWB,../range=(STATE_MAX-STATE_LOWB)};
+   recognizer(TRUE) other: [0]|output[&],
+     input=delay_band|output[&]|+or_other;
+   do_seppop() trigger=do_add_sub/done|+do_mul_div/done;
+   do_left() trigger=recos[0];
+   do_right() trigger=recos[1];
+   do_add_sub() trigger=recos[2..3];
+   do_mul_div() trigger=recos[4..5];
+   do_end() trigger=recos[6];
+   do_default() trigger=other;
+   or(TRUE) or_done: [0]|output[&],
+     input=do_left/done|+do_right/done|+do_seppop/done|+do_default/done;
+   pop_stk(sym) pop_done: done, pop=or_done;
+   or(TRUE) done: [0]|output[&], input=pop_done|+do_end/done;
+}
+
+net network()
+{ recognizer(FALSE) val_is_sep: [0]|output[&],
+    input=\val_stk{../threshold=(int [])[dup(SEP_SYM)]};
+  recognizer(FALSE) val_is_end: [0]|output[&],
+    input=\val_stk{../threshold=(int [])[dup(END_SYM)]};
+  recognizer(FALSE) sym_is_end: [0]|output[&],
+    input=\sym_stk{../threshold=(int [])[dup(END_SYM)]};
+  recognizer(FALSE) opr_is_end: [0]|output[&],
+    input=\opr_stk{../threshold=(int [])[dup(END_SYM)]};
+  recognizer(FALSE) opr_is_left: [0]|output[&],
+    input=\opr_stk{../threshold=(int [])[dup(LEFT_SYM)]};
+  recognizer(FALSE) opr_is_mul: [0]|output[&],
+    input=\opr_stk{../threshold=(int [])[dup(MUL_SYM)]};
+  recognizer(FALSE) opr_is_div: [0]|output[&],
+    input=\opr_stk{../threshold=(int [])[dup(DIV_SYM)]};
+  stack(MAX_SYM_STK) sym_stk:;
+  stack(MAX_VAL_STK) val_stk:;
+  stack(MAX_OPR_STK) opr_stk:;
+  sep_const();
+  do_reduce();
+  stack_null();
+  push_stk(sym) setup_push: done,
+    push=setup/strobe|output[rout],
+    input=setup/output[&]|output[rout];
+  setup()
+    clear/input[rin]=result/done/output[rout],
+    trigger/input[rin]=setup_push;
+  or(TRUE) or_out: [0]|output[&],
+    input=setup/done|output[rout]|+do_symbol/done;
+  delay_band(2) delay_one: [0]|output[&],
+    input=or_out;
+  recognizer(FALSE) syop_end: [0]|output[&],
+    input=sym_is_end|+opr_is_end;
+  recognizer(TRUE) while_cond: [0]|output[&],
+    input=delay_one|+syop_end{inverse};
+  do_symbol() trigger=while_cond;
+  recognizer(TRUE) finished: [0]|output[&],
+    input=delay_one|+syop_end;
+  pop_stk(val) result_pop: done,
+    pop=result/strobe|output[rout];
+  result() clear=finished, input[&]/input[rin]=\val_stk,
+    trigger=result_pop;
+  exp_io();
+} =
+{ exp_io={{$.$..\sym_stk\stack_top,$.$..\val_stk\stack_top,
+          $.$..\opr_stk\stack_top}}
+}
+

@@ -1,0 +1,49 @@
+/* NeSeL v2.0 April 1989 */
+/* WTA fast neural net */
+node
+{ float weight,*input;
+} graded_synapse;
+
+node
+{ float output;
+} data_ds;
+
+node
+{ BOOL output; float state;
+  graded_synapse comp[];
+  BOOL *winner;
+} wtaf_ds;
+
+node
+{ BOOL busy,output[];
+  float *input[];
+} wtaf_ctrl_ds;
+
+data_ds data_node(){}
+
+wtaf_ctrl_ds wta_fast_ctrl()
+ in input; out output,busy;
+{ int nn,xx=0; float lastmax,curval;
+  for(nn=0;nn<$size.input;++nn)
+     {if((curval=inf($input[nn]))>lastmax) {lastmax=curval; xx=nn;}
+      $output[nn]=FALSE;
+     }
+  $output[xx]=TRUE; $busy=(BOOL)!$busy;
+}
+
+wtaf_ds wta_fast_node()
+{ int cnum=$.size.comp;
+  $state=prodff($.comp,&($.comp->input),
+                $.comp,&($.comp->weight),cnum,1,0)/cnum;
+  $output=(float)(inx(BOOL,$winner)!=0);
+}
+
+net wta(data_size,wta_size)
+  in input; out output;
+{ data_node()[data_size];
+  wta_fast_node()[wta_size]
+    [*]\winner=wta_fast_ctrl\output[$?0],
+    [*]\comp[&!]=data_node[*];
+  wta_fast_ctrl()
+    input[+]=wta_fast_node[*]\state;
+}

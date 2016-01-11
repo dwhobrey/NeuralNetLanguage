@@ -1,0 +1,59 @@
+--------------------Configuration: nsllib - Win32 Debug--------------------
+Begining build with project "D:\Home\whobrey\NeSeL\Nsllib\nsllib.dsp", at root.
+Active configuration is Win32 (x86) Static Library (based on Win32 (x86) Static Library)
+
+Project's tools are:
+			"32-bit C/C++ Compiler for 80x86" with flags "/nologo /MDd /W3 /GX /Z7 /Od /I "..\include" /D "WIN32" /D "_DEBUG" /D "_WINDOWS" /D "_MBCS" /D "_AFXDLL" /Fp".\Debug/nsllib.pch" /YX /Fo".\Debug/" /Fd".\Debug/" /FD /c "
+			"Browser Database Maker" with flags "/nologo /o".\Debug/nsllib.bsc" "
+			"Library Manager" with flags "/nologo /out:".\Debug\nsllib.lib" "
+			"Custom Build" with flags ""
+			"<Component 0xa>" with flags ""
+
+Creating temp file "c:\windows\TEMP\RSP51A5.TMP" with contents </nologo /MDd /W3 /GX /Z7 /Od /I "..\include" /D "WIN32" /D "_DEBUG" /D "_WINDOWS" /D "_MBCS" /D "_AFXDLL" /Fp".\Debug/nsllib.pch" /YX /Fo".\Debug/" /Fd".\Debug/" /FD /c 
+"D:\Home\whobrey\NeSeL\Nsllib\memtrack.c"
+"D:\Home\whobrey\NeSeL\Nsllib\Nsldebug.c"
+"D:\Home\whobrey\NeSeL\Nsllib\Nslios.c"
+"D:\Home\whobrey\NeSeL\Nsllib\nslmonfn.c"
+"D:\Home\whobrey\NeSeL\Nsllib\Nslmshi.c"
+"D:\Home\whobrey\NeSeL\Nsllib\nslmslo.c"
+"D:\Home\whobrey\NeSeL\Nsllib\Nslmsmon.c"
+"D:\Home\whobrey\NeSeL\Nsllib\Nslstd.c"
+"D:\Home\whobrey\NeSeL\Nsllib\NSLWnd.cpp"
+"D:\Home\whobrey\NeSeL\Nsllib\nslwsio.cpp"
+"D:\Home\whobrey\NeSeL\Nsllib\StdAfx.cpp"
+"D:\Home\whobrey\NeSeL\Nsllib\ytab.c"
+>
+Creating command line "cl.exe @c:\windows\TEMP\RSP51A5.TMP" 
+Creating temp file "c:\windows\TEMP\RSP51A6.TMP" with contents </nologo /out:".\Debug\nsllib.lib" 
+.\Debug\memtrack.obj
+.\Debug\Nsldebug.obj
+.\Debug\Nslios.obj
+.\Debug\nslmonfn.obj
+.\Debug\Nslmshi.obj
+.\Debug\nslmslo.obj
+.\Debug\Nslmsmon.obj
+.\Debug\Nslstd.obj
+.\Debug\NSLWnd.obj
+.\Debug\nslwsio.obj
+.\Debug\StdAfx.obj
+.\Debug\ytab.obj>
+Creating command line "link.exe -lib @c:\windows\TEMP\RSP51A6.TMP" 
+Compiling...
+memtrack.c
+Nsldebug.c
+Nslios.c
+nslmonfn.c
+Nslmshi.c
+nslmslo.c
+Nslmsmon.c
+Nslstd.c
+NSLWnd.cpp
+nslwsio.cpp
+StdAfx.cpp
+ytab.c
+D:\Home\whobrey\NeSeL\Nsllib\ytab.c(845) : warning C4102: 'yyerrlab' : unreferenced label
+Creating library...
+
+
+
+nsllib.lib - 0 error(s), 1 warning(s)

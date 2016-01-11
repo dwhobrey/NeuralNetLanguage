@@ -1,0 +1,36 @@
+--------------------Configuration: Hopfield - Win32 Debug--------------------
+Begining build with project "D:\Home\whobrey\NeSeL\Examples\Hopfield\Hopfield.dsp", at root.
+Active configuration is Win32 (x86) Application (based on Win32 (x86) Application)
+
+Project's tools are:
+			"32-bit C/C++ Compiler for 80x86" with flags "/nologo /MDd /W3 /Gm /GX /Zi /Od /I "..\..\include" /D "WIN32" /D "_DEBUG" /D "_WINDOWS" /D "_AFXDLL" /Fp".\Debug/Hopfield.pch" /YX /Fo".\Debug/" /Fd".\Debug/" /FD /c "
+			"OLE Type Library Maker" with flags "/nologo /D "_DEBUG" /mktyplib203 /win32 "
+			"Win32 Resource Compiler" with flags "/l 0x809 /d "_DEBUG" /d "_AFXDLL" "
+			"Browser Database Maker" with flags "/nologo /o".\Debug/Hopfield.bsc" "
+			"COFF Linker for 80x86" with flags "/nologo /subsystem:windows /incremental:yes /pdb:".\Debug/Hopfield.pdb" /debug /machine:I386 /out:".\Debug/Hopfield.exe" "
+			"Custom Build" with flags ""
+			"<Component 0xa>" with flags ""
+
+Creating temp file "c:\windows\TEMP\RSP8004.BAT" with contents <@echo off
+C:\usr\bin\nsl.exe Hop -chdir .
+>
+Creating command line "c:\windows\TEMP\RSP8004.BAT" 
+Creating temp file "c:\windows\TEMP\RSP8005.TMP" with contents </nologo /MDd /W3 /Gm /GX /Zi /Od /I "..\..\include" /D "WIN32" /D "_DEBUG" /D "_WINDOWS" /D "_AFXDLL" /Fp".\Debug/Hopfield.pch" /YX /Fo".\Debug/" /Fd".\Debug/" /FD /c 
+"D:\Home\whobrey\NeSeL\Examples\Hopfield\Hop.c"
+"D:\Home\whobrey\NeSeL\include\NSLApp.cpp"
+>
+Creating command line "cl.exe @c:\windows\TEMP\RSP8005.TMP" 
+Running NeSeL...
+NeSeL(b)v2.1(DJRW)1989
+Hop
+?(?): warning N2109: node(s) with no input or output conxs found:
+50 
+Creating command line "link.exe /nologo /subsystem:windows /incremental:yes /pdb:".\Debug/Hopfield.pdb" /debug /machine:I386 /out:".\Debug/Hopfield.exe"  .\Debug\Hop.obj .\Debug\NSLApp.obj ..\..\include\nsllib.lib" 
+Compiling...
+Hop.c
+NSLApp.cpp
+Linking...
+
+
+
+Hopfield.exe - 0 error(s), 1 warning(s)

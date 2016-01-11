@@ -1,0 +1,5 @@
+title "BAM:b64s9l0, Success On Closest Prototype vs Hamming Distance"
+nobars
+xlab "Probe Hamming Distance From Prototype"
+ylab "Prototype Number, 0=Failed"
+plot [54:64][-1:5] "b64s9l0.c", "b64s9l0.d"
